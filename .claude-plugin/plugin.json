@@ -1,0 +1,19 @@
+{
+  "name": "model-budget",
+  "version": "1.0.0",
+  "description": "Picks the model for each role (plan, build, review, final check, mechanical) from how much of your Claude plan is left. Adds a Budget line to every prompt.",
+  "author": {
+    "name": "gustavdup",
+    "url": "https://github.com/gustavdup"
+  },
+  "homepage": "https://github.com/gustavdup/adaptive-model-budget",
+  "repository": "https://github.com/gustavdup/adaptive-model-budget",
+  "license": "MIT",
+  "keywords": [
+    "models",
+    "usage",
+    "limits",
+    "subagents",
+    "budget"
+  ]
+}

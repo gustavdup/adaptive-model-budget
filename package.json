@@ -1,0 +1,11 @@
+{
+  "name": "model-budget",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code plugin: picks models by how much of your Claude plan is left.",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

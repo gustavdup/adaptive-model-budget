@@ -1,0 +1,15 @@
+{
+  "name": "model-budget-marketplace",
+  "description": "Adaptive Model Budget: pick Claude models by how much of your plan is left.",
+  "owner": {
+    "name": "gustavdup",
+    "url": "https://github.com/gustavdup"
+  },
+  "plugins": [
+    {
+      "name": "model-budget",
+      "source": "./",
+      "description": "Picks the model for each role from how much of your Claude plan is left."
+    }
+  ]
+}

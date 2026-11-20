@@ -1,0 +1,16 @@
+{
+  "description": "Adds the model-budget Budget line to every prompt. Prints the last reading at once and refreshes it in the background when it is over 15 minutes old.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/agent-budget/scripts/budget.mjs\" hook 2>/dev/null || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
