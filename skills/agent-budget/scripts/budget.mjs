@@ -141,7 +141,7 @@ function takeLock(path) {
 /** Remove the lock only if it is still ours (it may have gone stale and been taken by another run). */
 function releaseLock(path, token) {
   try {
-    if (readFileSync(path, "utf8") === token) rmSync(path, { force: true });
+    if (statSync(path).size <= 256 && readFileSync(path, "utf8") === token) rmSync(path, { force: true });
   } catch {}
 }
 
@@ -223,7 +223,7 @@ export function showText(dir, nowMs = Date.now()) {
   if (limits?.last_error) out.push(`Last check failed at ${limits.last_error.at}: ${limits.last_error.message}`);
   const t = cfg.thresholds;
   out.push(`Thresholds: open under ${t.steady} %, steady ${t.steady} to ${t.tight} %, tight ${t.tight} to ${t.out} %, out ${t.out} % or more, exhausted 100 %.`);
-  out.push(`Delegate: ${cfg.delegate} (bigger: plan and review in subagents on medium and large tasks; always: every task; spawn_only: only when spawning anyway).`);
+  out.push(`Delegate: ${cfg.delegate} (bigger: a review subagent for medium tasks, plan and review subagents for large ones; always: plan and review for every task that changes code; spawn_only: only when spawning anyway).`);
   out.push(`Pace: ${cfg.pace} (on: on pace for ${PACE_TIGHTER.five_hour} % or more at the reset moves a window one mode tighter, at most to tight; on pace for under ${PACE_LOOSER} % with half the window gone moves it one mode looser, never from out).`);
   const weeks = goodWeeks(history).length;
   const wk = `${weeks} full week${weeks === 1 ? "" : "s"} of readings`;
@@ -319,6 +319,10 @@ async function main(argv) {
 
     case "check": {
       // Always print a line, even when the folder cannot be written (read-only home, sandbox).
+      try {
+        // A skill-only install has no hook: keep the job's copy current here instead.
+        if (dirname(SELF) !== join(dir, "bin")) syncJobScripts(dir, dirname(SELF));
+      } catch {}
       try {
         const p = paths(dir);
         if (lockHeld(p.lock)) await waitForLock(p.lock, 35_000);

@@ -48,8 +48,8 @@ The scripts live inside the `agent-budget` skill folder, so the skill also works
   - No telemetry. The child process gets `DISABLE_TELEMETRY=1`.
   - Never log or print the raw `get_usage` answer. Keep only the three windows.
 - **Isolate the child `claude`.** Keep `--setting-sources ""`, the empty `--mcp-config` and `--no-session-persistence`. These stop the plugin's own hook loading in the child.
-- **Clean its environment.** Drop `ANTHROPIC_API_KEY`, `CLAUDECODE` and `CLAUDE_CODE_*`. Do not use `--bare`, because it skips the subscription login.
-- **Tests never touch a real job.** Run `uninstall --yes` and `job` commands only with a temp `HOME` and a `PATH` without `crontab` (see `cliNoJob` in the tests).
+- **Clean its environment.** Drop `ANTHROPIC_API_KEY`, `CLAUDECODE` and `CLAUDE_CODE_*`, except `CLAUDE_CODE_OAUTH_TOKEN`: some users sign in with it, and the child needs it for the subscription login. Do not use `--bare`, because it skips the subscription login.
+- **Tests never touch a real job or real files.** Every CLI run in the tests uses `safeEnv` (`test/safe-env.mjs`): a temp `HOME`, an empty temp `PATH` (so no real `crontab` runs, wherever node lives), and `CLAUDE_CONFIG_DIR` inside the temp `HOME`. In-process tests pass temp folders and fakes.
 - **Files.**
   - Write with a temp file and rename.
   - The folder is 0700 and the files are 0600.

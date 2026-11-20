@@ -27,6 +27,8 @@ const NEW_WEEK_MS = 6 * 24 * 3_600_000;
  * blocks it covers count as half seen. A rise of 0 or 1 (rounding) over a gap is plain quiet time.
  */
 const SURE_POINTS = 1;
+/** A drop of more than this many points within a week is real (a plan change), not a rounding wobble. */
+const WOBBLE_POINTS = 2;
 const UNSURE_SEEN = 0.5;
 /**
  * A day is heavy or quiet when it is this far outside the usual band: at least DAY_MIN_POINTS, and at
@@ -112,8 +114,9 @@ function spreadInto(week, fromMs, toMs, amount, tz) {
 /**
  * The history after one weekly reading: { at, used, resets_at } (ISO times, used in %).
  * - Same week: the rise since the highest reading so far is spread over the time since the last
- *   reading. A drop (a rounding wobble) adds nothing. A reset time that moves by less than 6 days
- *   (a plan change) is still the same week.
+ *   reading. A drop of up to 2 points (a rounding wobble) adds nothing and keeps the high. A bigger
+ *   drop (a plan change, or a limit reset early) restarts from the new %. A reset time that moves by
+ *   less than 6 days is still the same week.
  * - New week (the reset time moved forward by 6 days or more): the time from the last reading to the
  *   old reset counts as quiet, the week is closed and kept, and the new reading's % is spread from
  *   the reset to now.
@@ -137,7 +140,8 @@ export function recordReading(history, reading, tz = localOffsetMs) {
   const newWeek = !last || reset - oldReset >= NEW_WEEK_MS;
   if (!newWeek) {
     spreadInto(h.current, lastAt, at, Math.max(0, reading.used - last.used), tz);
-    h.last = { at: reading.at, used: Math.max(last.used, reading.used), resets_at: reading.resets_at };
+    const realDrop = last.used - reading.used > WOBBLE_POINTS;
+    h.last = { at: reading.at, used: realDrop ? reading.used : Math.max(last.used, reading.used), resets_at: reading.resets_at };
   } else {
     if (last) {
       // Nothing was read between the last reading and the reset: count it as quiet, not unseen.
@@ -215,7 +219,9 @@ export function dayCheck(h, readMs, tz = localOffsetMs) {
   const from = dayStart(readMs, tz);
   const weekStart = Date.parse(h.current.reset) - WEEK_MS;
   if (from < weekStart) return null; // the week reset today: today's early blocks belong to last week
-  const today = pieces(from, readMs, tz);
+  // Leave out blocks that are only half seen: their use was spread over a long gap (often last
+  // night's work landing in this morning), so it says little about today.
+  const today = pieces(from, readMs, tz).filter((p) => h.current.c[p.block] >= 1);
   if (!today.length) return null;
   // This week so far: every block of today in full, since it only holds use up to the reading.
   const actual = round2(today.reduce((s, p) => s + h.current.v[p.block], 0));

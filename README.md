@@ -5,7 +5,7 @@
 While you have plenty left, Fable plans and reviews and Opus builds. As your limits fill up, it moves work to cheaper models and lower effort. It also watches how fast you are using each limit for the time left before it resets. You get a line like this on every prompt, and Claude follows it:
 
 ```
-Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.
+Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent, and plan in one too when large, on these models.
 ```
 
 Each role gets a model and an effort level for its subagents.
@@ -76,7 +76,7 @@ The line shows each window's percent used, its mode, and the time until it reset
 - The line says "on pace for" only when pace moved the mode.
 - Turn it off with `config set pace=off`.
 
-**Your own rhythm.** The budget keeps a small record of when in the week you use your plan, in 4-hour blocks, in `~/.config/model-budget/history.json`. After 2 full weeks, the weekly and Fable pace follow your rhythm instead of a straight line. If you work weekdays, Friday evening at 75 % is no longer "on pace for 110 %", because your weekend is quiet. The weekly bar for tightening then drops to 110 %.
+**Your own rhythm.** The budget keeps a small record of when in the week you use your plan, in 4-hour blocks, in `~/.config/model-budget/history.json`. After 2 full weeks, the weekly and Fable pace follow your rhythm instead of a straight line. For example, if you work weekdays, Fable at 35 % on Friday evening looks like 147 % on a straight line, so Fable would stop planning. Your rhythm knows the weekend is quiet: about 93 %, so Fable keeps planning. The weekly bar for tightening then drops to 110 %.
 
 - It uses the median of the last 6 weeks for each block. One odd week barely moves it, and a lasting change takes over in 3 or 4 weeks.
 - **Heavy and quiet days.** It compares today's use so far with your usual by this time of day. When today is well outside your usual range for this time of day (at least 3 points, and at least half as much again), the line says so, for example `Heavy day: 12 points of the week used today, usually 4 by now.` The rest of today then counts as heavier (or lighter) in the pace.
@@ -113,7 +113,7 @@ The effort only applies to subagents. The effort of your main session stays your
 
 **Delegation.** The budget can only choose models for subagents. It can't change the model your main session runs on. To get Fable planning and reviewing, Claude hands planning and review to subagents. You choose when:
 
-- `bigger` (the default): for medium and large tasks.
+- `bigger` (the default): a review subagent for medium tasks, and plan and review subagents for large ones. Small tasks get none.
 - `always`: for every task.
 - `spawn_only`: only when Claude spawns subagents anyway.
 
@@ -167,7 +167,7 @@ Your settings are yours alone. They live in `~/.config/model-budget/config.json`
 
 - **The file isn't there yet?** Run `/model-budget:budget-setup` once, or ask Claude to "write out my model budget settings".
 - **Changes apply on your next prompt.** There is no restart.
-- **A bad value is safe.** It falls back to its default, and the Budget line tells you. Run `/model-budget:budget` to see what is wrong.
+- **A bad value is safe.** It falls back to its default, and Claude tells you once. Run `/model-budget:budget` to see what is wrong.
 - **To go back to the defaults,** delete the file, or ask Claude to reset your model budget.
 
 ## Background job (optional, off by default)

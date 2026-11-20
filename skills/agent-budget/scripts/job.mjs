@@ -4,7 +4,7 @@
 // path on every plugin update.
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { VERSION } from "./core.mjs";
@@ -33,8 +33,7 @@ export function plistFor({ node, script, claude, dir, configDir = null }) {
   <key>EnvironmentVariables</key>
   <dict>
     <key>MODEL_BUDGET_CLAUDE</key>${str(claude)}
-    <key>MODEL_BUDGET_DIR</key>${str(dir)}${configDir ? `
-    <key>CLAUDE_CONFIG_DIR</key>${str(configDir)}` : ""}
+    <key>MODEL_BUDGET_DIR</key>${str(dir)}${configDir ? `\n    <key>CLAUDE_CONFIG_DIR</key>${str(configDir)}` : ""}
     <key>PATH</key>${str(path)}
   </dict>
   <key>StartInterval</key><integer>900</integer>
@@ -102,31 +101,55 @@ function writeCrontab(text) {
 
 const uid = () => process.getuid?.() ?? 0;
 
-/** Copy the scripts to <dir>/bin, with a VERSION file so a stale copy can be spotted. */
-export function copyScripts(dir, sourceDir) {
-  const bin = join(dir, "bin");
-  mkdirSync(bin, { recursive: true, mode: 0o700 });
-  for (const f of SCRIPT_FILES) cpSync(join(sourceDir, f), join(bin, f));
-  writeFileSync(join(bin, "VERSION"), `${VERSION}
-`, { mode: 0o600 });
-  return bin;
+/** Write a file with a temp file and rename, mode 0600. */
+function writeFileAtomic(path, data) {
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, data, { mode: 0o600 });
+  renameSync(tmp, path);
 }
 
 /**
- * When the job is on and its copy of the scripts is from another plugin version, copy the current
- * ones over. The job's command line points at <dir>/bin/budget.mjs, so nothing else needs changing.
- * Returns true when it copied. Cheap when nothing is needed: one small read.
+ * Copy the scripts to <dir>/bin, with a VERSION file so a stale copy can be spotted. Each file goes
+ * in with a temp file and rename, so a job starting mid-copy never runs half a file. VERSION goes
+ * last, so a copy cut short is tried again.
+ */
+export function copyScripts(dir, sourceDir) {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true, mode: 0o700 });
+  for (const f of SCRIPT_FILES) writeFileAtomic(join(bin, f), readFileSync(join(sourceDir, f)));
+  writeFileAtomic(join(bin, "VERSION"), `${VERSION}\n`);
+  return bin;
+}
+
+/** -1, 0 or 1. Plain dotted numbers; anything else counts as 0.0.0. */
+export function compareVersions(a, b) {
+  const parts = (v) => (/^\d+(\.\d+)*$/.test(v) ? v.split(".").map(Number) : [0]);
+  const x = parts(a);
+  const y = parts(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/**
+ * When the job is on and its copy of the scripts is from an older plugin version, copy the current
+ * ones over. Never copies an older version over a newer one, so two plugin versions side by side
+ * cannot swap the copy back and forth. The job's command line points at <dir>/bin/budget.mjs, so
+ * nothing else needs changing. Returns true when it copied. Cheap when nothing is needed.
  */
 export function syncJobScripts(dir, sourceDir) {
   const bin = join(dir, "bin");
   let have;
   try {
+    if (statSync(join(bin, "VERSION")).size > 64) return false;
     have = readFileSync(join(bin, "VERSION"), "utf8").trim();
   } catch (e) {
-    if (e.code === "ENOENT" && existsSync(join(bin, "budget.mjs"))) have = "unknown"; // a copy from before VERSION files
+    if (e.code === "ENOENT" && existsSync(join(bin, "budget.mjs"))) have = "0.0.0"; // a copy from before VERSION files
     else return false;
   }
-  if (have === VERSION) return false;
+  if (compareVersions(VERSION, have) <= 0) return false;
   copyScripts(dir, sourceDir);
   return true;
 }

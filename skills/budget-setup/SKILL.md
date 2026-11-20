@@ -22,7 +22,7 @@ The script is: `node "${CLAUDE_PLUGIN_ROOT}/skills/agent-budget/scripts/budget.m
    - **Transcripts.** Ask only when pace is on: "Learn your weekly rhythm from Claude Code's transcripts on this machine, so pace fits you from day one?" The options are: no (the default) and yes. Say plainly what yes means: once a day, a background check goes through the transcripts in `~/.claude/projects` from the last 35 days. It keeps and uses only the time and token counts of each reply. It never keeps, prints or sends any text, it stores only 42 numbers, and nothing leaves the machine. With no, the rhythm is learnt from the plugin's own readings over 2 to 3 weeks. Yes is `transcripts=on`.
    - **Limits.** "Keep the thresholds (steady 50 %, tight 75 %, out 90 %)?" The options are: keep, a bit earlier (40 / 65 / 85), a bit later (60 / 80 / 95), or custom.
    - **Delegation.** Ask when plan and review should go to subagents:
-     - `bigger` (the default): medium and large tasks.
+     - `bigger` (the default): a review subagent for medium tasks, plan and review subagents for large ones.
      - `always`: every task.
      - `spawn_only`: only when spawning anyway.
    - **Background job.** "Check usage every 15 minutes in the background, even with no session open?" The options are: no (the default) and yes. Say what each means:

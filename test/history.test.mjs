@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { safeEnv } from "./safe-env.mjs";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -401,7 +402,7 @@ test("the job copies every script module", () => {
 
 import { spawnSync } from "node:child_process";
 const SCRIPT = fileURLToPath(new URL("../skills/agent-budget/scripts/budget.mjs", import.meta.url));
-const cli = (dir, ...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: { ...process.env, MODEL_BUDGET_DIR: dir, MODEL_BUDGET_CLAUDE: "/nonexistent/claude" } });
+const cli = (dir, ...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: safeEnv(dir) });
 
 test("CLI: transcripts setting, and show explains the pace source", () => {
   const dir = tmp();

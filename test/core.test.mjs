@@ -96,7 +96,7 @@ test("Fable mode drives plan/build/review/final check, weekly drives mechanical"
 test("fresh reading gives a line that matches the roles", () => {
   const b = buildBudget(limits(), resolveConfig(null), NOW);
   assert.equal(b.status, "fresh");
-  assert.equal(b.line, "Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.");
+  assert.equal(b.line, "Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent, and plan in one too when large, on these models.");
 });
 
 test("the line follows the config, not fixed wording", () => {
@@ -122,7 +122,7 @@ test("a stale reading uses the fallback and says how old it is", () => {
   const b = buildBudget(limits({ fetched_at: iso(NOW - 120 * min), last_error: { at: iso(NOW - min), message: "Claude Code did not answer within 30 s" } }), resolveConfig(null), NOW);
   assert.equal(b.status, "stale");
   assert.equal(b.five_hour, null);
-  assert.equal(b.line, "Budget: reading is stale (last good reading 2 h ago; last check failed: Claude Code did not answer within 30 s). Fallback: Plan opus high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.");
+  assert.equal(b.line, "Budget: reading is stale (last good reading 2 h ago; last check failed: Claude Code did not answer within 30 s). Fallback: Plan opus high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent, and plan in one too when large, on these models.");
 });
 
 test("no reading at all uses the fallback", () => {

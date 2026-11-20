@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { safeEnv } from "./safe-env.mjs";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,12 +17,7 @@ const NOW = Date.now();
 const win = (used) => ({ used, resets_at: iso(NOW + 3 * 3600_000) });
 const freshLimits = (ageMin = 1) => ({ version: 1, fetched_at: iso(NOW - ageMin * 60_000), five_hour: win(20), seven_day: win(10), fable: win(10), last_error: null });
 
-const cli = (dir, ...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: { ...process.env, MODEL_BUDGET_DIR: dir, MODEL_BUDGET_CLAUDE: "/nonexistent/claude" } });
-/**
- * For `uninstall --yes`: a temp HOME (so no real launchd plist is found) and a PATH with only node
- * (so no real crontab is read or written). The tests must never touch a real job.
- */
-const cliNoJob = (dir, ...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: { ...process.env, HOME: tmp(), PATH: dirname(process.execPath), MODEL_BUDGET_DIR: dir, MODEL_BUDGET_CLAUDE: "/nonexistent/claude" } });
+const cli = (dir, ...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: safeEnv(dir) });
 
 test("hook prints the line for a fresh reading and does not refresh", () => {
   const dir = tmp();
@@ -252,7 +248,7 @@ test("uninstall deletes only model-budget files, never other files in the folder
   writeAtomic(join(dir, "config.json"), {});
   writeAtomic(join(dir, "limits.json"), freshLimits());
   writeFileSync(join(dir, "someone-else.txt"), "keep me");
-  const r = cliNoJob(dir, "uninstall", "--yes");
+  const r = cli(dir, "uninstall", "--yes");
   assert.equal(r.status, 0, r.stderr);
   assert.equal(existsSync(join(dir, "config.json")), false);
   assert.equal(existsSync(join(dir, "limits.json")), false);
@@ -262,7 +258,7 @@ test("uninstall deletes only model-budget files, never other files in the folder
 test("uninstall removes the folder when it is left empty", () => {
   const dir = tmp();
   writeAtomic(join(dir, "config.json"), {});
-  assert.equal(cliNoJob(dir, "uninstall", "--yes").status, 0);
+  assert.equal(cli(dir, "uninstall", "--yes").status, 0);
   assert.equal(existsSync(dir), false);
 });
 

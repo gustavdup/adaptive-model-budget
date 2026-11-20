@@ -6,7 +6,8 @@ allowed-tools:
   - Bash(node *agent-budget/scripts/budget.mjs")
   - Bash(node *agent-budget/scripts/budget.mjs* show)
   - Bash(node *agent-budget/scripts/budget.mjs* refresh --force)
-  - Bash(node *agent-budget/scripts/budget.mjs* config *)
+  - Bash(node *agent-budget/scripts/budget.mjs* config)
+  - Bash(node *agent-budget/scripts/budget.mjs* config show)
 ---
 
 # Agent budget
@@ -14,7 +15,7 @@ allowed-tools:
 Each prompt carries one Budget line from the model-budget hook, like this:
 
 ```
-Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.
+Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent, and plan in one too when large, on these models.
 ```
 
 Each role has a model and then an effort level for its subagents. The line already applies the user's settings, how fast each limit is being used, and the time left before it resets. "On pace for 140%" means the window would reach 140 % at its reset at this rate, so its mode was moved. Once there is enough history, pace follows the user's own weekly rhythm. "Heavy day" or "Quiet day" means today is far from the user's usual by this time; the modes already allow for it. Read the line and follow it.
@@ -29,7 +30,7 @@ This happens when the hook is not installed, or when only this skill was copied.
 node "${CLAUDE_SKILL_DIR}/scripts/budget.mjs"
 ```
 
-This usually takes a few seconds, and never more than about 30. It refreshes the reading if it is over 15 minutes old and prints the line. If it fails, the line it prints says so and gives the fallback.
+This usually takes a few seconds, and at most about a minute. It refreshes the reading if it is over 15 minutes old and prints the line. If it fails, the line it prints says so and gives the fallback.
 
 ## Roles
 
@@ -46,7 +47,7 @@ This usually takes a few seconds, and never more than about 30. It refreshes the
    - **Medium**: one area, a few files, and a clear approach.
    - **Large**: a new feature, many files, a risky change, or an approach that still needs working out.
 2. **Delegate as the line says.** The user chooses the delegate setting:
-   - "Bigger tasks: plan and review in subagents" (the default):
+   - "Medium and large tasks: review in a subagent, and plan in one too when large" (the default, `bigger`):
      - Small: do it yourself, with no subagents.
      - Medium: build, then spawn a review subagent on the review model. Skip the plan subagent and the final check.
      - Large: spawn a plan subagent on the plan model, then build, then spawn a review subagent on the review model. Then a final check, if the line names one.
@@ -59,7 +60,8 @@ This usually takes a few seconds, and never more than about 30. It refreshes the
    - "No new parallel fan-outs": do not start several subagents at once. Finish what is running.
    - "5h limit reached": start no new subagents.
 7. **Say so if the line and the task disagree.** For example, a risky change while limits are out. Say it in one line and ask the user, rather than spend quietly.
-8. **If a request is refused for a usage limit**, use the next model down for that role (fable to opus, opus to sonnet). Say so in one line.
+8. **Pass problems on.** If the line says the settings have problems, that the last check failed, or that the reading could not be updated, tell the user once in one line, and offer `/model-budget:budget` to see why. Only the model sees the line, so the user does not know otherwise. Do not repeat it on every prompt.
+9. **If a request is refused for a usage limit**, use the next model down for that role (fable to opus, opus to sonnet). Say so in one line.
 
 ## When the reading is stale or missing
 
@@ -71,7 +73,7 @@ The line then says "Fallback". Use the fallback roles and effort it lists. By de
 
 ## Setup, show and change
 
-When the user asks for these, run the script with the matching command. Show the output.
+When the user asks for these, run the script with the matching command. Show the output. Changing settings (`config set`, `init`, `reset`) asks the user for permission first: that is on purpose, because the settings are theirs.
 
 ```
 node "${CLAUDE_SKILL_DIR}/scripts/budget.mjs" show                  # reading, pace, thresholds, model and effort tables, job

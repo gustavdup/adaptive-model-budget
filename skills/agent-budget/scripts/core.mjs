@@ -6,7 +6,7 @@
 import { dayCheck, patternPace, patternShares } from "./history.mjs";
 
 /** Matches .claude-plugin/plugin.json. The job's copy of the scripts is refreshed when it differs. */
-export const VERSION = "1.2.0";
+export const VERSION = "1.2.1";
 
 export const MODES = ["open", "steady", "tight", "out", "exhausted"];
 export const MODELS = ["fable", "opus", "sonnet", "haiku"];
@@ -161,7 +161,7 @@ export const CONFIG_HELP = [
   "roles: the model for each role in each mode. The Fable limit's mode picks plan, build, review and final_check, unless the weekly limit is tight or worse and further along: then the weekly mode picks them. The weekly mode always picks mechanical.",
   "Models: fable, opus, sonnet, haiku. final_check can also be none.",
   "effort: the effort for each role's subagents in each mode, picked by the same mode as the model. Levels: low, medium, high, xhigh, max.",
-  "delegate: when plan and review go to subagents. bigger (medium and large tasks), always, or spawn_only.",
+  "delegate: when plan and review go to subagents. bigger (review for medium tasks, plan and review for large ones), always (plan and review for every task that changes code), or spawn_only.",
   "pace: on or off. On: a window used fast for the time gone moves one mode tighter (at most to tight), and one used slowly near its reset moves one mode looser. Never looser at the out threshold or over.",
   "transcripts: off or on. On: once a day, learn your usual weekly rhythm from the times and token counts in Claude Code's local transcripts, so pace follows it from day one. Only times and counts are kept and used, never text. Off: the rhythm is learnt from the readings over 2 to 3 weeks.",
   "A bad value falls back to its default and the Budget line says so. Delete this file to go back to all the defaults.",
@@ -393,7 +393,7 @@ function adviceText(fiveHourMode) {
 function delegateText(delegate) {
   if (delegate === "always") return " Every task: plan and review in subagents on these models.";
   if (delegate === "spawn_only") return "";
-  return " Bigger tasks: plan and review in subagents on these models.";
+  return " Medium and large tasks: review in a subagent, and plan in one too when large, on these models.";
 }
 
 const problemText = (problems) => (problems.length ? ` Settings have ${problems.length} problem${problems.length === 1 ? "" : "s"}, defaults used for them (ask Claude to show the model budget).` : "");
@@ -421,7 +421,7 @@ export function buildBudget(limits, config, nowMs, history = null) {
         ? `reading is stale (last good reading ${longUntil(Math.max(0, Math.round(ageMs(limits.fetched_at, nowMs) / 60_000)))} ago${failed})`
         : `no usage reading yet${failed}`;
     const line = clean(`Budget: ${what}. Fallback: ${rolesText(roles, effort)}${delegateText(cfg.delegate)}${problemText(cfg.problems)}`);
-    return { ...base, five_hour: null, seven_day: null, fable: null, roles, effort, line };
+    return { ...base, five_hour: null, seven_day: null, fable: null, pace_source: paceSource(cfg, history), day: null, roles, effort, line };
   }
 
   const paceOn = cfg.pace !== "off";
@@ -449,6 +449,10 @@ export function buildBudget(limits, config, nowMs, history = null) {
   if (openSteady(five_hour)) undo(five_hour);
   const sameRow = (t) => WEEKLY_ROLES.every((r) => t.open[r] === t.steady[r]);
   if (openSteady(seven_day) && sameRow(cfg.roles) && sameRow(cfg.effort ?? DEFAULT_EFFORT)) undo(seven_day);
+  // Fable open and steady only differ when their plan, build, review or final check rows differ
+  // (they are the same with "all Opus", for example).
+  const sameFableRow = (t) => FABLE_ROLES.every((r) => t.open[r] === t.steady[r]);
+  if (openSteady(fable) && sameFableRow(cfg.roles) && sameFableRow(cfg.effort ?? DEFAULT_EFFORT)) undo(fable);
   const roles = rolesFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.roles);
   const effort = effortFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.effort);
   const ageMin = Math.round(ageMs(limits.fetched_at, nowMs) / 60_000);
@@ -458,6 +462,13 @@ export function buildBudget(limits, config, nowMs, history = null) {
   const delegate = five_hour?.mode === "exhausted" ? "" : delegateText(cfg.delegate);
   const line = clean(`${head} ${rolesText(roles, effort)}${delegate}${adviceText(five_hour?.mode)}${problemText(cfg.problems)}`);
   return { ...base, five_hour, seven_day, fable, pace_source: pattern ? pattern.source : paceOn ? "straight line" : "off", day, roles, effort, line };
+}
+
+/** Where weekly pace comes from: "readings", "transcripts", "straight line" or "off". */
+export function paceSource(cfg, history) {
+  if (cfg.pace === "off") return "off";
+  const p = history ? patternShares(history, { transcripts: cfg.transcripts === "on" }) : null;
+  return p ? p.source : "straight line";
 }
 
 /** " Heavy day: 12 points of the week used today, usually 4 by now." */
