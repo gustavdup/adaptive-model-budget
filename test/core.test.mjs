@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_ROLES, DEFAULT_THRESHOLDS, budgetWindow, buildBudget, clean, modeFor, needsRefresh, parseLimits,
-  readingStatus, resolveConfig, rolesFor, shortUntil, windowsFromUsage,
+  fableRoleMode, readingStatus, resolveConfig, rolesFor, shortUntil, windowsFromUsage,
 } from "../skills/agent-budget/scripts/core.mjs";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -87,7 +87,7 @@ test("a non-object config is reported", () => {
 });
 
 test("Fable mode drives plan/build/review/final check, weekly drives mechanical", () => {
-  assert.deepEqual(rolesFor("open", "out"), { plan: "fable", build: "opus", review: "fable", final_check: "none", mechanical: "haiku" });
+  assert.deepEqual(rolesFor("open", "steady"), { plan: "fable", build: "opus", review: "fable", final_check: "none", mechanical: "sonnet" });
   assert.deepEqual(rolesFor("tight", "open"), { plan: "opus", build: "opus", review: "opus", final_check: "fable", mechanical: "sonnet" });
   // No reading: Fable steady, weekly open.
   assert.deepEqual(rolesFor(null, null), { plan: "opus", build: "opus", review: "fable", final_check: "none", mechanical: "sonnet" });
@@ -211,4 +211,24 @@ test("threshold keys from the object prototype are rejected", () => {
   const c = resolveConfig({ thresholds: { constructor: 5, toString: 6 } });
   assert.equal(c.problems.length, 2);
   assert.deepEqual(c.thresholds, DEFAULT_THRESHOLDS);
+});
+
+test("a tight or worse week moves the Fable roles too", () => {
+  assert.equal(fableRoleMode("open", "open"), "open");
+  assert.equal(fableRoleMode("open", "steady"), "open");
+  assert.equal(fableRoleMode("open", "tight"), "tight");
+  assert.equal(fableRoleMode("open", "out"), "out");
+  assert.equal(fableRoleMode("tight", "exhausted"), "exhausted");
+  // Fable further along than the week: Fable decides.
+  assert.equal(fableRoleMode("out", "tight"), "out");
+  assert.equal(fableRoleMode("exhausted", "out"), "exhausted");
+  // No Fable reading counts as steady.
+  assert.equal(fableRoleMode(null, "tight"), "tight");
+  assert.equal(fableRoleMode(null, null), "steady");
+  assert.deepEqual(rolesFor("open", "out"), { plan: "opus", build: "opus", review: "opus", final_check: "fable", mechanical: "haiku" });
+});
+
+test("the line for week 95 % and Fable 10 % has no Fable planning", () => {
+  const b = buildBudget(limits({ seven_day: win(95, 3000), fable: win(10, 3000) }), resolveConfig(null), NOW);
+  assert.match(b.line, /week 95% out .* Fable 10% open\. Plan opus, build opus, review opus, final check fable, mechanical haiku\./);
 });

@@ -30,7 +30,7 @@ The scripts live inside the `agent-budget` skill folder, so the skill also works
   - Older than 45 minutes: stale. Stale and missing readings give the fallback roles, which are the Fable `steady` row plus the weekly `open` row.
   - A window past its reset counts as 0 %.
 - **Roles.**
-  - The Fable mode drives plan, build, review and final check. The weekly mode drives mechanical.
+  - The Fable mode drives plan, build, review and final check, unless the weekly mode is tight or worse and further along: then the weekly mode drives them (`fableRoleMode`). The weekly mode always drives mechanical.
   - With no Fable window, Fable counts as `steady`.
 - **Config.** It is per user, in `~/.config/model-budget/config.json`, and never in the plugin folder, because plugin updates replace that folder. `config init`, `set` and `reset` write every value out, plus `_help` notes, so the file is easy to edit by hand. Keys starting with `_` are ignored. It is merged per mode and per role over `DEFAULT_ROLES` and `DEFAULT_THRESHOLDS`. Bad values fall back to the default, and the line reports the problem. The line is built from the resolved roles, so it always matches the config.
 - **The job.** It runs a copy of the scripts in `<dir>/bin`, because the plugin cache path changes on every update. It bakes in absolute `node` and `claude` paths.

@@ -5,7 +5,7 @@
 
 export const MODES = ["open", "steady", "tight", "out", "exhausted"];
 export const MODELS = ["fable", "opus", "sonnet", "haiku"];
-/** plan, build, review and final_check follow the Fable mode; mechanical follows the weekly mode. */
+/** plan, build, review and final_check follow the Fable mode (or the weekly mode once that is tight or worse); mechanical follows the weekly mode. */
 export const ROLES = ["plan", "build", "review", "final_check", "mechanical"];
 export const FABLE_ROLES = ["plan", "build", "review", "final_check"];
 export const WEEKLY_ROLES = ["mechanical"];
@@ -94,7 +94,7 @@ export function resolveConfig(raw) {
 export const CONFIG_HELP = [
   "Your own model-budget settings. Edit this file by hand, run /model-budget:budget-setup, or ask Claude to change them.",
   "thresholds: percent used where each mode starts. Whole numbers from 1 to 99, steady < tight < out. Exhausted is always 100.",
-  "roles: the model for each role in each mode. The Fable limit's mode picks plan, build, review and final_check. The weekly limit's mode picks mechanical.",
+  "roles: the model for each role in each mode. The Fable limit's mode picks plan, build, review and final_check, unless the weekly limit is tight or worse and further along: then the weekly mode picks them. The weekly mode always picks mechanical.",
   "Models: fable, opus, sonnet, haiku. final_check can also be none.",
   "delegate: when plan and review go to subagents. bigger (tasks bigger than a quick fix), always, or spawn_only.",
   "A bad value falls back to its default and the Budget line says so. Delete this file to go back to all the defaults.",
@@ -206,10 +206,22 @@ export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS) {
   return { used, mode: modeFor(used, w.severity, thresholds), resets_at: w.resets_at, resets_in_min: mins };
 }
 
-/** Fable mode picks plan/build/review/final check; weekly mode picks mechanical.
+/**
+ * The mode that picks plan/build/review/final check: the Fable mode, or the weekly mode when that is
+ * tight or worse and further along. Fable use counts against the weekly limit too, so a tight week
+ * should move planning and review off Fable even when the Fable limit itself is fine.
+ */
+export function fableRoleMode(fableMode, weeklyMode) {
+  const f = fableMode ?? "steady";
+  const w = weeklyMode ?? "open";
+  if (MODES.indexOf(w) < MODES.indexOf("tight")) return f;
+  return MODES.indexOf(w) > MODES.indexOf(f) ? w : f;
+}
+
+/** fableRoleMode picks plan/build/review/final check; weekly mode picks mechanical.
  * No reading means Fable `steady` and weekly `open`: that is also the fallback. */
 export function rolesFor(fableMode, weeklyMode, roles = DEFAULT_ROLES) {
-  const f = roles[fableMode ?? "steady"];
+  const f = roles[fableRoleMode(fableMode, weeklyMode)];
   const w = roles[weeklyMode ?? "open"];
   const out = {};
   for (const r of FABLE_ROLES) out[r] = f[r];

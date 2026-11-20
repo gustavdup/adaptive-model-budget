@@ -61,7 +61,7 @@ The line shows each window's percent used, its mode, and the time until it reset
 | out | 90 % or more |
 | exhausted | 100 % |
 
-- The **Fable mode** picks the models for plan, build, review and final check.
+- The **Fable mode** picks the models for plan, build, review and final check. Fable use also counts against the weekly limit, so once the **weekly mode** is tight or worse, and further along than the Fable mode, the weekly mode picks them instead. For example, with the week at 80 % and Fable at 10 %, the tight row applies: Opus plans and reviews.
 - The **weekly mode** picks the model for mechanical work: search, tests and simple edits.
 - The weekly mode also lowers subagent effort when it is tight or out.
 - The **5-hour mode** stops new parallel subagents when it is tight or out.

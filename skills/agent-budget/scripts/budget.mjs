@@ -173,7 +173,7 @@ export function showText(dir, nowMs = Date.now()) {
   const t = cfg.thresholds;
   out.push(`Thresholds: open under ${t.steady} %, steady ${t.steady} to ${t.tight} %, tight ${t.tight} to ${t.out} %, out ${t.out} % or more, exhausted 100 %.`);
   out.push(`Delegate: ${cfg.delegate} (bigger: plan and review in subagents on tasks bigger than a quick fix; always: every task; spawn_only: only when spawning anyway).`);
-  out.push("", "Roles. Plan, build, review and final check follow the Fable mode. Mechanical follows the weekly mode.");
+  out.push("", "Roles. Plan, build, review and final check follow the Fable mode, or the weekly mode once that is tight or worse and further along. Mechanical follows the weekly mode.");
   out.push(`  ${pad("mode", 10)}${ROLES.map((r) => pad(r, 12)).join("")}`);
   for (const m of MODES) out.push(`  ${pad(m, 10)}${ROLES.map((r) => pad(cfg.roles[m][r], 12)).join("")}`);
   const job = jobStatus();
