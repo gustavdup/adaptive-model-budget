@@ -88,6 +88,7 @@ export function parseHistory(raw) {
   if (!isObj(raw) || raw.version !== 1) return h;
   if (isObj(raw.last) && isIso(raw.last.at) && isIso(raw.last.resets_at) && typeof raw.last.used === "number" && Number.isFinite(raw.last.used)) {
     h.last = { at: raw.last.at, used: raw.last.used, resets_at: raw.last.resets_at };
+    if (typeof raw.last.low === "number" && Number.isFinite(raw.last.low)) h.last.low = raw.last.low;
   }
   if (validWeek(raw.current) && (raw.current.reset === null || isIso(raw.current.reset))) h.current = { reset: raw.current.reset, v: [...raw.current.v], c: [...raw.current.c] };
   if (Array.isArray(raw.weeks)) h.weeks = raw.weeks.filter(validWeek).slice(0, KEEP_WEEKS).map((w) => ({ v: [...w.v], c: [...w.c] }));
@@ -115,8 +116,9 @@ function spreadInto(week, fromMs, toMs, amount, tz) {
  * The history after one weekly reading: { at, used, resets_at } (ISO times, used in %).
  * - Same week: the rise since the highest reading so far is spread over the time since the last
  *   reading. A drop of up to 2 points (a rounding wobble) adds nothing and keeps the high. A bigger
- *   drop (a plan change, or a limit reset early) restarts from the new %. A reset time that moves by
- *   less than 6 days is still the same week.
+ *   drop is held until the next reading: if that one is low too, the drop is real (a plan change, or
+ *   a limit reset early) and the count restarts from it; if not, it was an odd answer and is dropped.
+ *   A reset time that moves by less than 6 days is still the same week.
  * - New week (the reset time moved forward by 6 days or more): the time from the last reading to the
  *   old reset counts as quiet, the week is closed and kept, and the new reading's % is spread from
  *   the reset to now.
@@ -139,9 +141,22 @@ export function recordReading(history, reading, tz = localOffsetMs) {
   const oldReset = last ? Date.parse(last.resets_at) : NaN;
   const newWeek = !last || reset - oldReset >= NEW_WEEK_MS;
   if (!newWeek) {
-    spreadInto(h.current, lastAt, at, Math.max(0, reading.used - last.used), tz);
-    const realDrop = last.used - reading.used > WOBBLE_POINTS;
-    h.last = { at: reading.at, used: realDrop ? reading.used : Math.max(last.used, reading.used), resets_at: reading.resets_at };
+    const next = { at: reading.at, used: last.used, resets_at: reading.resets_at };
+    if (last.used - reading.used > WOBBLE_POINTS) {
+      if (typeof last.low === "number") {
+        // A second low reading in a row: the drop is real. Restart from the first low, and count
+        // the rise since it.
+        spreadInto(h.current, lastAt, at, Math.max(0, reading.used - last.low), tz);
+        next.used = reading.used;
+      } else {
+        // One low reading may be an odd answer: hold it until the next reading confirms it.
+        next.low = reading.used;
+      }
+    } else {
+      spreadInto(h.current, lastAt, at, Math.max(0, reading.used - last.used), tz);
+      next.used = Math.max(last.used, reading.used);
+    }
+    h.last = next;
   } else {
     if (last) {
       // Nothing was read between the last reading and the reset: count it as quiet, not unseen.
@@ -225,13 +240,15 @@ export function dayCheck(h, readMs, tz = localOffsetMs) {
   if (!today.length) return null;
   // This week so far: every block of today in full, since it only holds use up to the reading.
   const actual = round2(today.reduce((s, p) => s + h.current.v[p.block], 0));
-  // Earlier weeks: by the start of the current block, by its end, and pro rata (to show).
+  // Earlier weeks: by the start of the current block, by its end, and pro rata (to show). When the
+  // current block was left out (half seen), the last block here is a finished one: count it in full.
   const last = today[today.length - 1];
   const done = today.slice(0, -1);
+  const lastIsNow = last.block === blockIndex(readMs, tz);
   const upTo = (w, part) => done.reduce((s, p) => s + w.v[p.block], 0) + w.v[last.block] * part;
-  const lower = median(weeks.map((w) => upTo(w, 0)));
+  const lower = median(weeks.map((w) => upTo(w, lastIsNow ? 0 : 1)));
   const upper = median(weeks.map((w) => upTo(w, 1)));
-  const proRata = weeks.map((w) => upTo(w, last.ms / BLOCK_MS));
+  const proRata = weeks.map((w) => upTo(w, lastIsNow ? last.ms / BLOCK_MS : 1));
   const typical = round2(median(proRata));
   const spread = mad(proRata);
   const gapAbove = Math.max(DAY_MIN_POINTS, DAY_MADS * spread, DAY_SHARE * upper);

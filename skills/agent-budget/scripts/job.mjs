@@ -4,7 +4,7 @@
 // path on every plugin update.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { VERSION } from "./core.mjs";
@@ -101,24 +101,56 @@ function writeCrontab(text) {
 
 const uid = () => process.getuid?.() ?? 0;
 
-/** Write a file with a temp file and rename, mode 0600. */
-function writeFileAtomic(path, data) {
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, data, { mode: 0o600 });
-  renameSync(tmp, path);
+const COPY_LOCK_STALE_MS = 60_000;
+
+/** Take <bin>/.copy.lock. Returns a release function, or null when another copy is running. */
+function takeCopyLock(bin) {
+  const path = join(bin, ".copy.lock");
+  for (let i = 0; i < 2; i++) {
+    try {
+      closeSync(openSync(path, "wx", 0o600));
+      return () => rmSync(path, { force: true });
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      try {
+        if (Date.now() - statSync(path).mtimeMs > COPY_LOCK_STALE_MS) rmSync(path, { force: true });
+        else return null;
+      } catch {}
+    }
+  }
+  return null;
 }
 
 /**
- * Copy the scripts to <dir>/bin, with a VERSION file so a stale copy can be spotted. Each file goes
- * in with a temp file and rename, so a job starting mid-copy never runs half a file. VERSION goes
- * last, so a copy cut short is tried again.
+ * Copy the scripts to <dir>/bin, with a VERSION file so a stale copy can be spotted.
+ * - Under a lock, so two sessions never copy at once (a second one skips: the next prompt retries).
+ * - All temp files are written first, then renamed one after another, so a failure midway leaves
+ *   the old copy whole, and the gap where old and new files sit side by side is as short as it can be.
+ * - VERSION goes last, so a copy cut short is tried again.
+ * The scripts are bigger than 16 KB: this is the second exception to the read cap, for our own files.
+ * Returns bin, or null when another copy was running.
  */
 export function copyScripts(dir, sourceDir) {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true, mode: 0o700 });
-  for (const f of SCRIPT_FILES) writeFileAtomic(join(bin, f), readFileSync(join(sourceDir, f)));
-  writeFileAtomic(join(bin, "VERSION"), `${VERSION}\n`);
-  return bin;
+  const release = takeCopyLock(bin);
+  if (!release) return null;
+  const tmps = [];
+  try {
+    for (const f of SCRIPT_FILES) {
+      const tmp = join(bin, `${f}.${process.pid}.tmp`);
+      writeFileSync(tmp, readFileSync(join(sourceDir, f)), { mode: 0o600 });
+      tmps.push([tmp, join(bin, f)]);
+    }
+    const vtmp = join(bin, `VERSION.${process.pid}.tmp`);
+    writeFileSync(vtmp, `${VERSION}\n`, { mode: 0o600 });
+    tmps.push([vtmp, join(bin, "VERSION")]);
+    for (const [from, to] of tmps) renameSync(from, to);
+    return bin;
+  } finally {
+    for (const [from] of tmps) rmSync(from, { force: true });
+    release();
+  }
 }
 
 /** -1, 0 or 1. Plain dotted numbers; anything else counts as 0.0.0. */
@@ -150,8 +182,7 @@ export function syncJobScripts(dir, sourceDir) {
     else return false;
   }
   if (compareVersions(VERSION, have) <= 0) return false;
-  copyScripts(dir, sourceDir);
-  return true;
+  return copyScripts(dir, sourceDir) !== null;
 }
 
 /** Copy the scripts to <dir>/bin, then install the job for this platform. Returns a short summary. */
@@ -159,6 +190,7 @@ export function installJob({ dir, claude, node = stableNode(), sourceDir, platfo
   if (platform !== "darwin" && platform !== "linux") throw new Error(`no background job on ${platform}; the hook still keeps the reading fresh while you work`);
   if (!claude) throw new Error("could not find the claude command (set MODEL_BUDGET_CLAUDE to its full path)");
   const bin = copyScripts(dir, sourceDir);
+  if (!bin) throw new Error("another session is updating the job's scripts; try again in a minute");
   const opts = { node, script: join(bin, "budget.mjs"), claude, dir, configDir };
 
   if (platform === "darwin") {

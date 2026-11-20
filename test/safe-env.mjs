@@ -3,12 +3,24 @@
 // - PATH is an empty temp folder, so no real `crontab` can run, wherever node is installed
 //   (node itself is started by its absolute path);
 // - CLAUDE_CONFIG_DIR points into the temp HOME, so no real transcripts are read.
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const made = [];
+process.on("exit", () => {
+  for (const d of made) rmSync(d, { recursive: true, force: true });
+});
+
+/** A temp folder that is removed when the test process exits. */
+export function tempDir(prefix = "model-budget-test-") {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  made.push(d);
+  return d;
+}
+
 export function safeEnv(dir, extra = {}) {
-  const home = mkdtempSync(join(tmpdir(), "model-budget-home-"));
-  const path = mkdtempSync(join(tmpdir(), "model-budget-path-"));
+  const home = tempDir("model-budget-home-");
+  const path = tempDir("model-budget-path-");
   return { ...process.env, HOME: home, PATH: path, CLAUDE_CONFIG_DIR: join(home, ".claude"), MODEL_BUDGET_DIR: dir, MODEL_BUDGET_CLAUDE: "/nonexistent/claude", ...extra };
 }

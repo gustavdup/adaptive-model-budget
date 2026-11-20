@@ -60,7 +60,7 @@ This usually takes a few seconds, and at most about a minute. It refreshes the r
    - "No new parallel fan-outs": do not start several subagents at once. Finish what is running.
    - "5h limit reached": start no new subagents.
 7. **Say so if the line and the task disagree.** For example, a risky change while limits are out. Say it in one line and ask the user, rather than spend quietly.
-8. **Pass problems on.** If the line says the settings have problems, that the last check failed, or that the reading could not be updated, tell the user once in one line, and offer `/model-budget:budget` to see why. Only the model sees the line, so the user does not know otherwise. Do not repeat it on every prompt.
+8. **Pass problems on.** If the line says the settings have problems, that the last check failed, or that the reading could not be updated, tell the user once in one line, and offer to show the model budget: `/model-budget:budget` with the plugin, or the `show` command below with the skill alone. Only the model sees the line, so the user does not know otherwise. Do not repeat it on every prompt.
 9. **If a request is refused for a usage limit**, use the next model down for that role (fable to opus, opus to sonnet). Say so in one line.
 
 ## When the reading is stale or missing

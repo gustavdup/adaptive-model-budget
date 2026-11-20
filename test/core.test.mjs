@@ -122,7 +122,13 @@ test("a stale reading uses the fallback and says how old it is", () => {
   const b = buildBudget(limits({ fetched_at: iso(NOW - 120 * min), last_error: { at: iso(NOW - min), message: "Claude Code did not answer within 30 s" } }), resolveConfig(null), NOW);
   assert.equal(b.status, "stale");
   assert.equal(b.five_hour, null);
-  assert.equal(b.line, "Budget: reading is stale (last good reading 2 h ago; last check failed: Claude Code did not answer within 30 s). Fallback: Plan opus high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent, and plan in one too when large, on these models.");
+  assert.equal(b.line, "Budget: reading is stale (last good reading 2 h ago; last check failed: Claude Code did not answer within 30 s). Fallback: Plan opus high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent, and plan in one too when large, on these models. If this keeps happening, tell the user once, and offer to show the model budget.");
+});
+
+test("after a break, an old failed check is not repeated as news", () => {
+  const b = buildBudget(limits({ fetched_at: iso(NOW - 300 * min), last_error: { at: iso(NOW - 200 * min), message: "offline" } }), resolveConfig(null), NOW);
+  assert.match(b.line, /^Budget: reading is stale \(last good reading 5 h ago\)\. Fallback:/);
+  assert.doesNotMatch(b.line, /offline|tell the user/);
 });
 
 test("no reading at all uses the fallback", () => {
@@ -133,7 +139,7 @@ test("no reading at all uses the fallback", () => {
 
 test("config problems are flagged in the line", () => {
   const b = buildBudget(limits(), resolveConfig({ roles: { open: { plan: "x" } } }), NOW);
-  assert.match(b.line, /Settings have 1 problem, defaults used for them \(ask Claude to show the model budget\)\.$/);
+  assert.match(b.line, /Settings have 1 problem, defaults used for them: tell the user once, and offer to show the model budget\.$/);
 });
 
 test("reading status and refresh timing", () => {

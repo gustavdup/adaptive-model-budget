@@ -2,7 +2,7 @@
 // the scan timeout, show without a fresh reading, and the job install and removal with a fake crontab.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeEnv } from "./safe-env.mjs";
+import { safeEnv, tempDir } from "./safe-env.mjs";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +19,7 @@ const UTC = () => 0;
 const H = 3_600_000;
 const D = 24 * H;
 const iso = (ms) => new Date(ms).toISOString();
-const tmp = () => mkdtempSync(join(tmpdir(), "mb-r3-"));
+const tmp = () => tempDir("mb-r3-");
 const RESET = Date.parse("2026-11-19T04:00:00Z");
 const NEXT = RESET + WEEK_MS;
 const SRC = fileURLToPath(new URL("../skills/agent-budget/scripts/", import.meta.url));
@@ -192,4 +192,46 @@ test("job on and off on Linux touch only the model-budget line", () => {
   } finally {
     process.env.PATH = saved;
   }
+});
+
+// ---------- fourth review ----------
+
+test("one odd low reading is held, not counted; two in a row restart the count", () => {
+  let h = recordReading(null, { at: iso(RESET + D), used: 60, resets_at: iso(NEXT) }, UTC);
+  for (const [i, used] of [60, 12, 60].entries()) h = recordReading(h, { at: iso(RESET + D + (i + 1) * H), used, resets_at: iso(NEXT) }, UTC);
+  assert.equal(sum(h.current.v), 0, "60, 60, 12, 60 records nothing");
+  let g = recordReading(null, { at: iso(RESET + D), used: 40, resets_at: iso(NEXT) }, UTC);
+  for (const [i, used] of [45, 42, 46].entries()) g = recordReading(g, { at: iso(RESET + D + (i + 1) * H), used, resets_at: iso(NEXT) }, UTC);
+  assert.equal(sum(g.current.v), 6, "40, 45, 42, 46 records 6");
+});
+
+test("a quiet day is seen even when the current block is only half seen", () => {
+  const cur = { reset: iso(NEXT), v: new Array(BLOCKS).fill(0), c: new Array(BLOCKS).fill(1) };
+  cur.c[1 * 6 + 3] = 0.5; // Monday 12:00 to 16:00, half seen
+  const h = { ...emptyHistory(), weeks: [workWeek(4), workWeek(4), workWeek(4)], current: cur };
+  // At 13:00 with nothing used, usual by 12:00 is 4: band 4 to 4, quiet below 4 - 3 = 1.
+  assert.equal(dayCheck(h, Date.parse("2026-11-23T13:00:00Z"), UTC).kind, "quiet");
+});
+
+test("the CLI refuses extra arguments, so a pre-approved command carries nothing else", () => {
+  const dir = tmp();
+  for (const args of [["show", "config"], ["config", "reset", "show"], ["config", "show", "x"], ["uninstall", "--yes", "config"], ["refresh", "--now"], ["job", "status", "on"], ["config", "set", "pace=off", "reset"]]) {
+    const r = cli(dir, ...args);
+    assert.equal(r.status, 1, args.join(" "));
+    assert.match(r.stderr, /unexpected argument|only KEY=VALUE/, args.join(" "));
+  }
+  assert.equal(existsSync(join(dir, "config.json")), false);
+  assert.equal(cli(dir, "show").status, 0);
+});
+
+test("a second copy while one is running skips, and leaves no temp files", () => {
+  const dir = tmp();
+  mkdirSync(join(dir, "bin"), { recursive: true });
+  writeFileSync(join(dir, "bin", ".copy.lock"), "");
+  assert.equal(copyScripts(dir, SRC), null);
+  assert.equal(readdirSync(join(dir, "bin")).filter((f) => f.endsWith(".tmp")).length, 0);
+  const old = new Date(Date.now() - 5 * 60_000);
+  utimesSync(join(dir, "bin", ".copy.lock"), old, old);
+  assert.equal(copyScripts(dir, SRC), join(dir, "bin"));
+  assert.equal(existsSync(join(dir, "bin", ".copy.lock")), false);
 });

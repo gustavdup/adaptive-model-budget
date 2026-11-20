@@ -5,8 +5,8 @@
 
 import { dayCheck, patternPace, patternShares } from "./history.mjs";
 
-/** Matches .claude-plugin/plugin.json. The job's copy of the scripts is refreshed when it differs. */
-export const VERSION = "1.2.1";
+/** Matches .claude-plugin/plugin.json. The job's copy of the scripts is refreshed when this is newer. */
+export const VERSION = "1.2.2";
 
 export const MODES = ["open", "steady", "tight", "out", "exhausted"];
 export const MODELS = ["fable", "opus", "sonnet", "haiku"];
@@ -396,7 +396,10 @@ function delegateText(delegate) {
   return " Medium and large tasks: review in a subagent, and plan in one too when large, on these models.";
 }
 
-const problemText = (problems) => (problems.length ? ` Settings have ${problems.length} problem${problems.length === 1 ? "" : "s"}, defaults used for them (ask Claude to show the model budget).` : "");
+// Only the model sees the line, so these two are worded as instructions to it.
+const problemText = (problems) => (problems.length ? ` Settings have ${problems.length} problem${problems.length === 1 ? "" : "s"}, defaults used for them: tell the user once, and offer to show the model budget.` : "");
+/** A failed check is only news while it is recent: after a break, the old error is not repeated. */
+const FAIL_NEWS_MS = 2 * RETRY_AFTER_MS;
 
 /** Strip control characters and cap the length: the line goes straight into the prompt. */
 export function clean(s) {
@@ -415,12 +418,15 @@ export function buildBudget(limits, config, nowMs, history = null) {
   if (status !== "fresh") {
     const roles = rolesFor(null, null, cfg.roles);
     const effort = effortFor(null, null, cfg.effort);
-    const failed = limits?.last_error ? `; last check failed: ${limits.last_error.message.slice(0, 120)}` : "";
+    const err = limits?.last_error;
+    const recent = err && ageMs(err.at, nowMs) <= FAIL_NEWS_MS && !(Date.parse(err.at) < Date.parse(limits.fetched_at ?? 0));
+    const failed = recent ? `; last check failed: ${err.message.slice(0, 120)}` : "";
     const what =
       status === "stale"
         ? `reading is stale (last good reading ${longUntil(Math.max(0, Math.round(ageMs(limits.fetched_at, nowMs) / 60_000)))} ago${failed})`
         : `no usage reading yet${failed}`;
-    const line = clean(`Budget: ${what}. Fallback: ${rolesText(roles, effort)}${delegateText(cfg.delegate)}${problemText(cfg.problems)}`);
+    const tell = recent ? " If this keeps happening, tell the user once, and offer to show the model budget." : "";
+    const line = clean(`Budget: ${what}. Fallback: ${rolesText(roles, effort)}${delegateText(cfg.delegate)}${problemText(cfg.problems)}${tell}`);
     return { ...base, five_hour: null, seven_day: null, fable: null, pace_source: paceSource(cfg, history), day: null, roles, effort, line };
   }
 

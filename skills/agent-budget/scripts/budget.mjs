@@ -311,6 +311,11 @@ async function main(argv) {
   const dir = configDir();
   const [cmd = "check", ...rest] = argv;
   const flag = (f) => rest.includes(f);
+  // Refuse anything extra, so a pre-approved command (like `show`) can never carry another one.
+  const only = (...allowed) => {
+    const extra = rest.find((a) => !allowed.includes(a));
+    if (extra !== undefined) throw new Error(`unexpected argument "${extra}" for ${cmd}`);
+  };
 
   switch (cmd) {
     case "hook":
@@ -318,6 +323,7 @@ async function main(argv) {
       return 0;
 
     case "check": {
+      only();
       // Always print a line, even when the folder cannot be written (read-only home, sandbox).
       try {
         // A skill-only install has no hook: keep the job's copy current here instead.
@@ -340,6 +346,7 @@ async function main(argv) {
     }
 
     case "refresh": {
+      only("--force", "--quiet");
       // --quiet is the background run (the hook's spawn and the job): only it may scan transcripts.
       const r = await refresh(dir, { force: flag("--force"), scan: flag("--quiet") });
       const stamp = new Date().toISOString();
@@ -354,11 +361,14 @@ async function main(argv) {
     }
 
     case "show":
+      only();
       console.log(showText(dir));
       return 0;
 
     case "config": {
       const sub = rest[0] ?? "show";
+      if (sub !== "set" && rest.length > 1) throw new Error(`unexpected argument "${rest[1]}" for config ${sub}`);
+      if (sub === "set" && rest.slice(1).some((a) => !a.includes("="))) throw new Error(`config set takes only KEY=VALUE pairs, not "${rest.slice(1).find((a) => !a.includes("="))}"`);
       if (sub === "show") {
         const { thresholds, roles, effort, delegate, pace, transcripts, problems } = loadConfig(dir);
         console.log(JSON.stringify({ thresholds, delegate, pace, transcripts, roles, effort, problems }, null, 2));
@@ -395,6 +405,7 @@ async function main(argv) {
 
     case "job": {
       const sub = rest[0] ?? "status";
+      if (rest.length > 1) throw new Error(`unexpected argument "${rest[1]}" for job ${sub}`);
       if (sub === "on") console.log(installJob({ dir, claude: findClaude(), sourceDir: dirname(SELF) }));
       else if (sub === "off") console.log(uninstallJob({ dir }));
       else if (sub === "status") console.log(`Background job: ${jobStatus()}.`);
@@ -403,6 +414,7 @@ async function main(argv) {
     }
 
     case "uninstall": {
+      only("--yes");
       if (!flag("--yes")) {
         console.log(`This removes the background job (if any) and deletes the model-budget files in ${dir}, including config.json. Run again with --yes to do it.`);
         return 1;

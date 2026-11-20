@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeEnv } from "./safe-env.mjs";
+import { safeEnv, tempDir } from "./safe-env.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -208,7 +208,7 @@ const SCRIPT = fileURLToPath(new URL("../skills/agent-budget/scripts/budget.mjs"
 const cli = (dir, ...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: safeEnv(dir) });
 
 test("CLI show lists pace and the effort table; config set effort changes the line", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mb-pace-"));
+  const dir = tempDir("mb-pace-");
   const now = Date.now();
   writeAtomic(join(dir, "limits.json"), { version: 1, fetched_at: new Date(now).toISOString(), five_hour: { used: 10, resets_at: new Date(now + 120 * min).toISOString() }, seven_day: { used: 60, resets_at: new Date(now + 4 * day * min).toISOString() }, fable: { used: 10, resets_at: new Date(now + 4 * day * min).toISOString() }, last_error: null });
   let r = cli(dir, "show");
@@ -230,7 +230,7 @@ test("CLI show lists pace and the effort table; config set effort changes the li
 });
 
 test("a 1.0.0 config.json with no effort or pace loads clean and gains both on set", () => {
-  const dir = mkdtempSync(join(tmpdir(), "mb-old-"));
+  const dir = tempDir("mb-old-");
   const old = { _help: ["old"], thresholds: { steady: 50, tight: 75, out: 90 }, delegate: "bigger", roles: { open: { plan: "opus", build: "opus", review: "fable", final_check: "none", mechanical: "sonnet" } } };
   writeAtomic(join(dir, "config.json"), old);
   let r = cli(dir, "show");

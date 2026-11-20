@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeEnv } from "./safe-env.mjs";
+import { safeEnv, tempDir } from "./safe-env.mjs";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -296,7 +296,7 @@ test("a transcript line gives only a time and a weight, counted once per reply",
 });
 
 test("the scan reads recent .jsonl files, including subagent folders, and keeps only shares", async () => {
-  const root = mkdtempSync(join(tmpdir(), "mb-tr-"));
+  const root = tempDir("mb-tr-");
   const now = Date.now();
   const proj = join(root, "-Users-x-proj");
   mkdirSync(join(proj, "sess", "subagents"), { recursive: true });
@@ -322,7 +322,7 @@ test("sharesFromEvents sums weights per block", () => {
 
 // ---------- refresh writes the history ----------
 
-const tmp = () => mkdtempSync(join(tmpdir(), "mb-hist-"));
+const tmp = () => tempDir("mb-hist-");
 const fakeFetch = (used, at) => async () => ({ ok: true, file: { version: 1, fetched_at: iso(at), fable_fetched_at: iso(at), five_hour: { used: 5, resets_at: iso(at + 2 * H) }, seven_day: { used, resets_at: iso(NEXT) }, fable: null, last_error: null } });
 
 test("refresh records each good reading in history.json, compact and private", async () => {

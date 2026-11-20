@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeEnv } from "./safe-env.mjs";
+import { safeEnv, tempDir } from "./safe-env.mjs";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import { askClaude, childEnv, fetchLimits } from "../skills/agent-budget/scripts
 import { cronLineFor, editCrontab, plistFor, stableNode, CRON_MARKER } from "../skills/agent-budget/scripts/job.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../skills/agent-budget/scripts/budget.mjs", import.meta.url));
-const tmp = () => mkdtempSync(join(tmpdir(), "model-budget-test-"));
+const tmp = () => tempDir("model-budget-test-");
 const iso = (ms) => new Date(ms).toISOString();
 const NOW = Date.now();
 const win = (used) => ({ used, resets_at: iso(NOW + 3 * 3600_000) });
