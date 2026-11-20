@@ -23,6 +23,33 @@ export const DEFAULT_ROLES = Object.freeze({
   exhausted: { plan: "opus", build: "opus", review: "opus", final_check: "none", mechanical: "haiku" },
 });
 
+/** Subagent effort levels, lowest first. */
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+/** The effort for each role's subagents, picked by the same mode as its model. */
+export const DEFAULT_EFFORT = Object.freeze({
+  open: { plan: "high", build: "medium", review: "high", final_check: "medium", mechanical: "low" },
+  steady: { plan: "high", build: "medium", review: "high", final_check: "medium", mechanical: "low" },
+  tight: { plan: "medium", build: "medium", review: "medium", final_check: "medium", mechanical: "low" },
+  out: { plan: "medium", build: "low", review: "medium", final_check: "low", mechanical: "low" },
+  exhausted: { plan: "low", build: "low", review: "low", final_check: "low", mechanical: "low" },
+});
+
+/** Pace: how fast a window is being used, as the % it would reach at its reset at this rate. */
+export const PACE = ["on", "off"];
+export const DEFAULT_PACE = "on";
+/** Window lengths in minutes, to tell how much of a window has gone. */
+export const WINDOW_MIN = Object.freeze({ five_hour: 300, seven_day: 7 * 24 * 60, fable: 7 * 24 * 60 });
+/** Pace only counts once this share of the window has gone: early on, one busy hour looks like a flood. */
+export const PACE_MIN_ELAPSED = 0.1;
+/**
+ * On pace for this % or more at the reset: one mode tighter. Higher for the weekly windows, because a
+ * straight line through the week ignores quiet evenings and weekends.
+ */
+export const PACE_TIGHTER = Object.freeze({ five_hour: 110, seven_day: 130, fable: 130 });
+/** On pace for under this %, with at least PACE_LOOSER_ELAPSED of the window gone: one mode looser. */
+export const PACE_LOOSER = 70;
+export const PACE_LOOSER_ELAPSED = 0.5;
+
 /** A reading older than this is refreshed (by the hook in the background, or by the skill). */
 export const REFRESH_AFTER_MS = 15 * 60_000;
 /** After a failed check, wait this long before the hook tries again. */
@@ -47,7 +74,7 @@ export function resolveConfig(raw) {
   const src = raw == null ? {} : raw;
   if (!isObj(src)) {
     problems.push("config.json is not a JSON object");
-    return { thresholds: { ...DEFAULT_THRESHOLDS }, roles: cloneRoles(DEFAULT_ROLES), delegate: DEFAULT_DELEGATE, problems };
+    return { thresholds: { ...DEFAULT_THRESHOLDS }, roles: cloneRoles(DEFAULT_ROLES), effort: cloneRoles(DEFAULT_EFFORT), delegate: DEFAULT_DELEGATE, pace: DEFAULT_PACE, problems };
   }
 
   const thresholds = { ...DEFAULT_THRESHOLDS };
@@ -81,33 +108,60 @@ export function resolveConfig(raw) {
       }
     }
   }
+  const effort = cloneRoles(DEFAULT_EFFORT);
+  if (src.effort !== undefined) {
+    if (!isObj(src.effort)) problems.push("effort is not an object");
+    else {
+      for (const [mode, row] of Object.entries(src.effort)) {
+        if (!MODES.includes(mode)) { problems.push(`effort.${mode} is not a mode (use ${MODES.join(", ")})`); continue; }
+        if (!isObj(row)) { problems.push(`effort.${mode} is not an object`); continue; }
+        for (const [role, level] of Object.entries(row)) {
+          if (!ROLES.includes(role)) problems.push(`effort.${mode}.${role} is not a role (use ${ROLES.join(", ")})`);
+          else if (!EFFORTS.includes(level)) problems.push(`effort.${mode}.${role} must be ${EFFORTS.join(", ")}`);
+          else effort[mode][role] = level;
+        }
+      }
+    }
+  }
   let delegate = DEFAULT_DELEGATE;
   if (src.delegate !== undefined) {
     if (DELEGATE.includes(src.delegate)) delegate = src.delegate;
     else problems.push(`delegate must be ${DELEGATE.join(", ")}`);
   }
+  let pace = DEFAULT_PACE;
+  if (src.pace !== undefined) {
+    if (PACE.includes(src.pace)) pace = src.pace;
+    else problems.push(`pace must be ${PACE.join(" or ")}`);
+  }
   // Keys starting with "_" are notes (like "_help") and are ignored.
-  for (const k of Object.keys(src)) if (!k.startsWith("_") && !["thresholds", "roles", "delegate"].includes(k)) problems.push(`${k} is not a setting (use thresholds, roles, delegate)`);
-  return { thresholds, roles, delegate, problems };
+  for (const k of Object.keys(src)) if (!k.startsWith("_") && !SETTINGS.includes(k)) problems.push(`${k} is not a setting (use ${SETTINGS.join(", ")})`);
+  return { thresholds, roles, effort, delegate, pace, problems };
 }
+
+const SETTINGS = ["thresholds", "roles", "effort", "delegate", "pace"];
 
 export const CONFIG_HELP = [
   "Your own model-budget settings. Edit this file by hand, run /model-budget:budget-setup, or ask Claude to change them.",
   "thresholds: percent used where each mode starts. Whole numbers from 1 to 99, steady < tight < out. Exhausted is always 100.",
   "roles: the model for each role in each mode. The Fable limit's mode picks plan, build, review and final_check, unless the weekly limit is tight or worse and further along: then the weekly mode picks them. The weekly mode always picks mechanical.",
   "Models: fable, opus, sonnet, haiku. final_check can also be none.",
-  "delegate: when plan and review go to subagents. bigger (tasks bigger than a quick fix), always, or spawn_only.",
+  "effort: the effort for each role's subagents in each mode, picked by the same mode as the model. Levels: low, medium, high, xhigh, max.",
+  "delegate: when plan and review go to subagents. bigger (medium and large tasks), always, or spawn_only.",
+  "pace: on or off. On: a window used fast for the time gone moves one mode tighter (at most to tight), and one used slowly near its reset moves one mode looser. Never looser at the out threshold or over.",
   "A bad value falls back to its default and the Budget line says so. Delete this file to go back to all the defaults.",
 ];
 
 /** The whole effective config, every value written out, for config.json. */
 export function fullConfig(cfg) {
-  const roles = {};
-  for (const m of MODES) {
-    roles[m] = {};
-    for (const r of ROLES) roles[m][r] = cfg.roles[m][r];
-  }
-  return { _help: CONFIG_HELP, thresholds: { ...cfg.thresholds }, delegate: cfg.delegate, roles };
+  const table = (src) => {
+    const out = {};
+    for (const m of MODES) {
+      out[m] = {};
+      for (const r of ROLES) out[m][r] = src[m][r];
+    }
+    return out;
+  };
+  return { _help: CONFIG_HELP, thresholds: { ...cfg.thresholds }, delegate: cfg.delegate, pace: cfg.pace, roles: table(cfg.roles), effort: table(cfg.effort) };
 }
 
 export const allowedModels = (role) => (role === "final_check" ? [...MODELS, "none"] : MODELS);
@@ -197,13 +251,49 @@ export function modeFor(used, severity, thresholds = DEFAULT_THRESHOLDS) {
   return "open";
 }
 
-/** A window whose reset time has passed counts as 0 % until the next reading. */
-export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS) {
+/**
+ * The % a window would reach at its reset at the rate used so far, or null when too little of the
+ * window has gone to tell (or the reset time does not fit the window's length).
+ */
+export function paceFor(used, resetsInMin, windowMin) {
+  if (!windowMin || resetsInMin <= 0 || resetsInMin > windowMin) return null;
+  const gone = windowMin - resetsInMin; // minutes, so 10 % of 300 is exactly 30
+  if (gone < PACE_MIN_ELAPSED * windowMin) return null;
+  return Math.round((used * windowMin) / gone);
+}
+
+/**
+ * The mode after pace, at most one step from the mode the % used gives:
+ * - on pace for PACE_TIGHTER % or more: one step tighter, but never past tight;
+ * - on pace for under PACE_LOOSER % with half the window gone: one step looser, but never from out or
+ *   exhausted (at the out threshold, or Claude's own warning, the mode stays).
+ */
+export function pacedMode(mode, pace, resetsInMin, windowMin, tighterAt = PACE_TIGHTER.five_hour) {
+  if (pace === null || pace === undefined) return mode;
+  const i = MODES.indexOf(mode);
+  // Pace never makes a window out: out comes from % used or Claude's own warning only.
+  if (pace >= tighterAt && i < MODES.indexOf("tight")) return MODES[i + 1];
+  // Pace is never below % used, so with the default thresholds only steady can become open.
+  const gone = windowMin - resetsInMin;
+  if (pace < PACE_LOOSER && gone >= PACE_LOOSER_ELAPSED * windowMin && i > 0 && i < MODES.indexOf("out")) return MODES[i - 1];
+  return mode;
+}
+
+/**
+ * A window whose reset time has passed counts as 0 % until the next reading.
+ * `windowMin` (the window's length) turns on pace; without it the mode comes from the % used alone.
+ * Pace is worked out at `readMs`, the time of the reading, so an ageing reading keeps its pace.
+ */
+export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS, windowMin = null, readMs = nowMs, tighterAt = undefined) {
   if (!w) return null;
-  if (Date.parse(w.resets_at) <= nowMs) return { used: 0, mode: "open", resets_at: w.resets_at, resets_in_min: 0 };
+  if (Date.parse(w.resets_at) <= nowMs) return { used: 0, mode: "open", used_mode: "open", pace: null, resets_at: w.resets_at, resets_in_min: 0 };
   const used = Math.round(w.used);
   const mins = Math.max(0, Math.round((Date.parse(w.resets_at) - nowMs) / 60_000));
-  return { used, mode: modeFor(used, w.severity, thresholds), resets_at: w.resets_at, resets_in_min: mins };
+  const usedMode = modeFor(used, w.severity, thresholds);
+  const readMins = Math.round((Date.parse(w.resets_at) - readMs) / 60_000);
+  const pace = windowMin ? paceFor(used, readMins, windowMin) : null;
+  const mode = pacedMode(usedMode, pace, readMins, windowMin, tighterAt);
+  return { used, mode, used_mode: usedMode, pace, resets_at: w.resets_at, resets_in_min: mins };
 }
 
 /**
@@ -229,6 +319,9 @@ export function rolesFor(fableMode, weeklyMode, roles = DEFAULT_ROLES) {
   return out;
 }
 
+/** The effort per role, picked by the same modes as the models. */
+export const effortFor = (fableMode, weeklyMode, effort = DEFAULT_EFFORT) => rolesFor(fableMode, weeklyMode, effort);
+
 // ---------- the line ----------
 
 /** "16m", "2h05m", "3d4h". */
@@ -251,21 +344,25 @@ export function longUntil(mins) {
 
 function windowText(label, w, withReset) {
   if (!w) return `${label} n/a`;
-  const reset = withReset && w.resets_in_min > 0 ? ` (resets in ${shortUntil(w.resets_in_min)})` : "";
-  return `${label} ${w.used}% ${w.mode}${reset}`;
+  const notes = [];
+  // Say "on pace for" only when pace moved the mode, so the line stays short.
+  if (w.pace !== null && w.pace !== undefined && w.mode !== w.used_mode) notes.push(`on pace for ${w.pace}%`);
+  if (withReset && w.resets_in_min > 0) notes.push(`resets in ${shortUntil(w.resets_in_min)}`);
+  return `${label} ${w.used}% ${w.mode}${notes.length ? ` (${notes.join(", ")})` : ""}`;
 }
 
-/** "Plan fable, build opus, review fable, mechanical sonnet." with final check only when set. */
-export function rolesText(roles) {
-  const parts = ROLES.filter((r) => roles[r] !== "none").map((r) => `${ROLE_LABEL[r]} ${roles[r]}`);
+/**
+ * "Plan fable high, build opus medium, review fable high, mechanical sonnet low." with final check
+ * only when set. Without `effort` it names the models only.
+ */
+export function rolesText(roles, effort = null) {
+  const parts = ROLES.filter((r) => roles[r] !== "none").map((r) => `${ROLE_LABEL[r]} ${roles[r]}${effort?.[r] ? ` ${effort[r]}` : ""}`);
   const s = parts.join(", ");
   return `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
 }
 
-function adviceText(fiveHourMode, weeklyMode) {
+function adviceText(fiveHourMode) {
   let s = "";
-  if (weeklyMode === "tight") s += " Subagent effort one level lower.";
-  else if (weeklyMode === "out" || weeklyMode === "exhausted") s += " Lowest subagent effort that holds quality.";
   if (fiveHourMode === "tight") s += " No new parallel fan-outs.";
   else if (fiveHourMode === "out") s += " 5h nearly out: no new fan-outs, finish what is running.";
   else if (fiveHourMode === "exhausted") s += " 5h limit reached: start no new subagents.";
@@ -296,26 +393,30 @@ export function buildBudget(limits, config, nowMs) {
 
   if (status !== "fresh") {
     const roles = rolesFor(null, null, cfg.roles);
+    const effort = effortFor(null, null, cfg.effort);
     const failed = limits?.last_error ? `; last check failed: ${limits.last_error.message.slice(0, 120)}` : "";
     const what =
       status === "stale"
         ? `reading is stale (last good reading ${longUntil(Math.max(0, Math.round(ageMs(limits.fetched_at, nowMs) / 60_000)))} ago${failed})`
         : `no usage reading yet${failed}`;
-    const line = clean(`Budget: ${what}. Fallback: ${rolesText(roles)}${delegateText(cfg.delegate)}${problemText(cfg.problems)}`);
-    return { ...base, five_hour: null, seven_day: null, fable: null, roles, line };
+    const line = clean(`Budget: ${what}. Fallback: ${rolesText(roles, effort)}${delegateText(cfg.delegate)}${problemText(cfg.problems)}`);
+    return { ...base, five_hour: null, seven_day: null, fable: null, roles, effort, line };
   }
 
-  const five_hour = budgetWindow(limits.five_hour, nowMs, cfg.thresholds);
-  const seven_day = budgetWindow(limits.seven_day, nowMs, cfg.thresholds);
+  const len = (key) => (cfg.pace === "off" ? null : WINDOW_MIN[key]);
+  const readAt = Date.parse(limits.fetched_at);
+  const five_hour = budgetWindow(limits.five_hour, nowMs, cfg.thresholds, len("five_hour"), readAt, PACE_TIGHTER.five_hour);
+  const seven_day = budgetWindow(limits.seven_day, nowMs, cfg.thresholds, len("seven_day"), readAt, PACE_TIGHTER.seven_day);
   // A Fable window carried over from an older answer is dropped once it is stale itself.
   const fableFresh = ageMs(limits.fable_fetched_at ?? limits.fetched_at, nowMs) <= STALE_AFTER_MS;
-  const fable = fableFresh ? budgetWindow(limits.fable, nowMs, cfg.thresholds) : null;
+  const fable = fableFresh ? budgetWindow(limits.fable, nowMs, cfg.thresholds, len("fable"), Date.parse(limits.fable_fetched_at ?? limits.fetched_at), PACE_TIGHTER.fable) : null;
   const roles = rolesFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.roles);
+  const effort = effortFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.effort);
   const ageMin = Math.round(ageMs(limits.fetched_at, nowMs) / 60_000);
   const age = ageMs(limits.fetched_at, nowMs) > REFRESH_AFTER_MS ? ` Reading ${ageMin} min old.` : "";
   const head = `Budget: ${windowText("5h", five_hour, true)} · ${windowText("week", seven_day, true)} · ${windowText("Fable", fable, false)}.${age}`;
   // With the 5-hour limit reached, no subagents at all: drop the delegate sentence.
   const delegate = five_hour?.mode === "exhausted" ? "" : delegateText(cfg.delegate);
-  const line = clean(`${head} ${rolesText(roles)}${delegate}${adviceText(five_hour?.mode, seven_day?.mode)}${problemText(cfg.problems)}`);
-  return { ...base, five_hour, seven_day, fable, roles, line };
+  const line = clean(`${head} ${rolesText(roles, effort)}${delegate}${adviceText(five_hour?.mode)}${problemText(cfg.problems)}`);
+  return { ...base, five_hour, seven_day, fable, roles, effort, line };
 }

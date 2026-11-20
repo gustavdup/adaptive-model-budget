@@ -2,11 +2,13 @@
 
 `model-budget` is a Claude Code plugin that picks the right model for each job based on how much of your Claude plan is left.
 
-While you have plenty left, Fable plans and reviews and Opus builds. As your limits fill up, it moves work to cheaper models. You get a line like this on every prompt, and Claude follows it:
+While you have plenty left, Fable plans and reviews and Opus builds. As your limits fill up, it moves work to cheaper models and lower effort. It also watches how fast you are using each limit for the time left before it resets. You get a line like this on every prompt, and Claude follows it:
 
 ```
-Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable, build opus, review fable, mechanical sonnet. Bigger tasks: plan and review in subagents on these models.
+Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.
 ```
+
+Each role gets a model and an effort level for its subagents.
 
 **What you say in a prompt always wins.** For example, "use opus for the review" or "don't use subagents".
 
@@ -63,8 +65,16 @@ The line shows each window's percent used, its mode, and the time until it reset
 
 - The **Fable mode** picks the models for plan, build, review and final check. Fable use also counts against the weekly limit, so once the **weekly mode** is tight or worse, and further along than the Fable mode, the weekly mode picks them instead. For example, with the week at 80 % and Fable at 10 %, the tight row applies: Opus plans and reviews.
 - The **weekly mode** picks the model for mechanical work: search, tests and simple edits.
-- The weekly mode also lowers subagent effort when it is tight or out.
+- The **effort** for each role follows the same mode as its model.
 - The **5-hour mode** stops new parallel subagents when it is tight or out.
+
+**Pace.** Each reading has the real reset time of each window, for your own account. So the budget also looks at how fast you are going: the % you would reach at the reset at this rate.
+
+- On pace for 110 % or more (130 % for the weekly and Fable windows, since evenings and weekends are quiet): the window moves one mode tighter. For example, 60 % of the week used after 3 days is on pace for 140 %, so steady becomes tight.
+- On pace for under 70 %, with at least half the window gone: one mode looser. For example, Fable at 55 % with a day left is on pace for 64 %, so steady becomes open and Fable plans again.
+- Pace moves a mode by one step at most, and never past tight: only the % used, or Claude's own warning, makes a window out. It waits until 10 % of the window has gone. It never loosens a window that is out or exhausted.
+- The line says "on pace for" only when pace moved the mode.
+- Turn it off with `config set pace=off`.
 
 Default models:
 
@@ -76,9 +86,26 @@ Default models:
 | out | opus | opus | opus | fable | haiku |
 | exhausted | opus | opus | opus | none | haiku |
 
+Default subagent effort:
+
+| Mode | Plan | Build | Review | Final check | Mechanical |
+|---|---|---|---|---|---|
+| open, steady | high | medium | high | medium | low |
+| tight | medium | medium | medium | medium | low |
+| out | medium | low | medium | low | low |
+| exhausted | low | low | low | low | low |
+
+The effort only applies to subagents. The effort of your main session stays your own choice.
+
+**Task size.** Claude sorts each task into one of three sizes:
+
+- **Small** (a quick fix, a question, a read): Claude does it itself, with no subagents.
+- **Medium** (one area, a few files, a clear approach): Claude builds it, then a review subagent checks it.
+- **Large** (a new feature, many files, risky or unclear): a plan subagent, the build, a review subagent, and the final check when the line names one.
+
 **Delegation.** The budget can only choose models for subagents. It can't change the model your main session runs on. To get Fable planning and reviewing, Claude hands planning and review to subagents. You choose when:
 
-- `bigger` (the default): for tasks bigger than a quick fix.
+- `bigger` (the default): for medium and large tasks.
 - `always`: for every task.
 - `spawn_only`: only when Claude spawns subagents anyway.
 
@@ -96,6 +123,9 @@ Or ask Claude directly, for example "set the model budget so open mode plans wit
 config set open.plan=opus                 # one cell
 config set all.mechanical=haiku           # one role in every mode
 config set thresholds.tight=80            # move a threshold
+config set effort.all.build=high          # build subagents on high effort in every mode
+config set effort.tight.review=high       # one effort cell
+config set pace=off                       # modes from % used only
 config set delegate=always                # plan and review in subagents on every task
 config init                               # write every setting out to the file
 config reset                              # back to the defaults
@@ -110,12 +140,17 @@ Your settings are yours alone. They live in `~/.config/model-budget/config.json`
   "_help": ["...short notes on each setting..."],
   "thresholds": { "steady": 50, "tight": 75, "out": 90 },
   "delegate": "bigger",
+  "pace": "on",
   "roles": {
     "open":      { "plan": "fable", "build": "opus", "review": "fable", "final_check": "none",  "mechanical": "sonnet" },
     "steady":    { "plan": "opus",  "build": "opus", "review": "fable", "final_check": "none",  "mechanical": "sonnet" },
     "tight":     { "plan": "opus",  "build": "opus", "review": "opus",  "final_check": "fable", "mechanical": "sonnet" },
     "out":       { "plan": "opus",  "build": "opus", "review": "opus",  "final_check": "fable", "mechanical": "haiku" },
     "exhausted": { "plan": "opus",  "build": "opus", "review": "opus",  "final_check": "none",  "mechanical": "haiku" }
+  },
+  "effort": {
+    "open":      { "plan": "high",   "build": "medium", "review": "high",   "final_check": "medium", "mechanical": "low" },
+    "...":       "one row per mode, like roles"
   }
 }
 ```

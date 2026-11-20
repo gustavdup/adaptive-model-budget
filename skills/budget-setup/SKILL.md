@@ -1,6 +1,6 @@
 ---
 name: budget-setup
-description: Set up or change the model budget (thresholds, model per role, delegation, optional background job). Run by the user as a slash command.
+description: Set up or change the model budget (thresholds, model and effort per role, pace, delegation, optional background job). Run by the user as a slash command.
 disable-model-invocation: true
 allowed-tools: Bash(node *agent-budget/scripts/budget.mjs*)
 ---
@@ -13,13 +13,15 @@ The script is: `node "${CLAUDE_PLUGIN_ROOT}/skills/agent-budget/scripts/budget.m
 
 ## Steps
 
-1. Run `budget show` and show the user the output. It has the thresholds, the role table and whether the background job is on. On a first run these are the defaults.
+1. Run `budget show` and show the user the output. It has the thresholds, pace, the model and effort tables, and whether the background job is on. On a first run these are the defaults.
 
 2. Ask with AskUserQuestion, one question per item, as multiple choice:
    - **Models.** "Keep these models?" The options are: keep, change some, or all Opus (no Fable). If they want changes, ask which mode and role in plain words. Then build `<mode>.<role>=<model>` pairs. The modes are open, steady, tight, out and exhausted, or `all` for all. The roles are plan, build, review, final_check and mechanical.
+   - **Effort.** "Keep the subagent effort levels?" Show the effort table from `budget show`. The options are: keep, one level higher for plan and review, or change some. Build `effort.<mode>.<role>=<level>` pairs, using `all` for every mode when the level is the same. The levels are low, medium, high, xhigh and max.
+   - **Pace.** "Move modes by how fast you are using each limit?" The options are: yes (the default) and no. With yes, a limit used fast for the time gone counts one mode tighter, and one used slowly near its reset counts one mode looser. No is `pace=off`.
    - **Limits.** "Keep the thresholds (steady 50 %, tight 75 %, out 90 %)?" The options are: keep, a bit earlier (40 / 65 / 85), a bit later (60 / 80 / 95), or custom.
    - **Delegation.** Ask when plan and review should go to subagents:
-     - `bigger` (the default): tasks bigger than a quick fix.
+     - `bigger` (the default): medium and large tasks.
      - `always`: every task.
      - `spawn_only`: only when spawning anyway.
    - **Background job.** "Check usage every 15 minutes in the background, even with no session open?" The options are: no (the default) and yes. Say what each means:

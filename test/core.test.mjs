@@ -96,32 +96,33 @@ test("Fable mode drives plan/build/review/final check, weekly drives mechanical"
 test("fresh reading gives a line that matches the roles", () => {
   const b = buildBudget(limits(), resolveConfig(null), NOW);
   assert.equal(b.status, "fresh");
-  assert.equal(b.line, "Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable, build opus, review fable, mechanical sonnet. Bigger tasks: plan and review in subagents on these models.");
+  assert.equal(b.line, "Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.");
 });
 
 test("the line follows the config, not fixed wording", () => {
   const cfg = resolveConfig({ roles: { open: { plan: "sonnet", final_check: "opus" } }, delegate: "spawn_only" });
   const b = buildBudget(limits(), cfg, NOW);
-  assert.match(b.line, /Plan sonnet, build opus, review fable, final check opus, mechanical sonnet\.$/);
+  assert.match(b.line, /Plan sonnet high, build opus medium, review fable high, final check opus medium, mechanical sonnet low\.$/);
 });
 
 test("tight and out windows add advice", () => {
   const b = buildBudget(limits({ five_hour: win(80, 30), seven_day: win(92, 3000) }), resolveConfig(null), NOW);
   assert.match(b.line, /5h 80% tight \(resets in 30m\)/);
-  assert.match(b.line, /mechanical haiku/);
-  assert.match(b.line, /Lowest subagent effort that holds quality\. No new parallel fan-outs\.$/);
+  assert.match(b.line, /mechanical haiku low/);
+  assert.match(b.line, / No new parallel fan-outs\.$/);
+  assert.doesNotMatch(b.line, /effort one level lower|Lowest subagent effort/);
 });
 
 test("a missing Fable window counts as steady and shows n/a", () => {
   const b = buildBudget(limits({ fable: null }), resolveConfig(null), NOW);
-  assert.match(b.line, /Fable n\/a\. Plan opus, build opus, review fable/);
+  assert.match(b.line, /Fable n\/a\. Plan opus high, build opus medium, review fable high/);
 });
 
 test("a stale reading uses the fallback and says how old it is", () => {
   const b = buildBudget(limits({ fetched_at: iso(NOW - 120 * min), last_error: { at: iso(NOW - min), message: "Claude Code did not answer within 30 s" } }), resolveConfig(null), NOW);
   assert.equal(b.status, "stale");
   assert.equal(b.five_hour, null);
-  assert.equal(b.line, "Budget: reading is stale (last good reading 2 h ago; last check failed: Claude Code did not answer within 30 s). Fallback: Plan opus, build opus, review fable, mechanical sonnet. Bigger tasks: plan and review in subagents on these models.");
+  assert.equal(b.line, "Budget: reading is stale (last good reading 2 h ago; last check failed: Claude Code did not answer within 30 s). Fallback: Plan opus high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.");
 });
 
 test("no reading at all uses the fallback", () => {
@@ -230,5 +231,5 @@ test("a tight or worse week moves the Fable roles too", () => {
 
 test("the line for week 95 % and Fable 10 % has no Fable planning", () => {
   const b = buildBudget(limits({ seven_day: win(95, 3000), fable: win(10, 3000) }), resolveConfig(null), NOW);
-  assert.match(b.line, /week 95% out .* Fable 10% open\. Plan opus, build opus, review opus, final check fable, mechanical haiku\./);
+  assert.match(b.line, /week 95% out .* Fable 10% open\. Plan opus medium, build opus low, review opus medium, final check fable low, mechanical haiku low\./);
 });

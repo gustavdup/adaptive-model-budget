@@ -1,6 +1,6 @@
 ---
 name: agent-budget
-description: Pick the model (and effort) for subagents from the Budget line, which shows how much of the user's Claude plan is left. Use for any task bigger than a quick fix or a question, and whenever you spawn subagents or split work into plan, build, review, final check or mechanical roles. Also use when the user asks to set up, show or change their model budget.
+description: Pick the model and effort for subagents from the Budget line, which shows how much of the user's Claude plan is left. Use for any task bigger than a quick fix or a question, and whenever you spawn subagents or split work into plan, build, review, final check or mechanical roles. Also use when the user asks to set up, show or change their model budget.
 allowed-tools:
   - Bash(node *agent-budget/scripts/budget.mjs)
   - Bash(node *agent-budget/scripts/budget.mjs")
@@ -14,10 +14,10 @@ allowed-tools:
 Each prompt carries one Budget line from the model-budget hook, like this:
 
 ```
-Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable, build opus, review fable, mechanical sonnet. Bigger tasks: plan and review in subagents on these models.
+Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.
 ```
 
-The line already applies the user's settings. Read it and follow it.
+Each role has a model and then an effort level for its subagents. The line already applies the user's settings, how fast each limit is being used, and the time left before it resets. "On pace for 140%" means the window would reach 140 % at its reset at this rate, so its mode was moved. Read the line and follow it.
 
 **The user's explicit instruction in the session always wins** over the line. If the user names a model, an effort level, or says not to use subagents, do that.
 
@@ -42,18 +42,20 @@ This usually takes a few seconds, and never more than about 30. It refreshes the
 ## What to do
 
 1. **Decide the task size.**
-   - A quick fix, a question, or a read-and-explain is small.
-   - Anything that needs a plan or changes several files is bigger.
+   - **Small**: a quick fix, a question, or a read-and-explain.
+   - **Medium**: one area, a few files, and a clear approach.
+   - **Large**: a new feature, many files, a risky change, or an approach that still needs working out.
 2. **Delegate as the line says.** The user chooses the delegate setting:
-   - "Bigger tasks: plan and review in subagents" (the default): for bigger tasks, spawn a plan subagent on the plan model, then build, then spawn a review subagent on the review model. Do small tasks yourself.
-   - "Every task: plan and review in subagents": do the same for every task that changes code.
+   - "Bigger tasks: plan and review in subagents" (the default):
+     - Small: do it yourself, with no subagents.
+     - Medium: build, then spawn a review subagent on the review model. Skip the plan subagent and the final check.
+     - Large: spawn a plan subagent on the plan model, then build, then spawn a review subagent on the review model. Then a final check, if the line names one.
+   - "Every task: plan and review in subagents": treat every task that changes code as large.
    - No delegate sentence: only use the models when you spawn subagents anyway.
-3. **Build.** For a bigger task that you are delegating, build on the build model: build yourself if you are running on it, otherwise spawn a build subagent on it. Small tasks, and anything under `spawn_only`, you build yourself.
+3. **Build.** For a medium or large task that you are delegating, build on the build model: build yourself if you are running on it, otherwise spawn a build subagent on it. Small tasks, and anything under `spawn_only`, you build yourself.
 4. **Use the mechanical model** for search, gates and other routine subagents.
-5. **Set `model` on every subagent you spawn** to the model the line names for its role. The names are `fable`, `opus`, `sonnet` and `haiku`.
+5. **Set `model` and `effort` on every subagent you spawn** to what the line names for its role. The models are `fable`, `opus`, `sonnet` and `haiku`. The effort levels are `low`, `medium`, `high`, `xhigh` and `max`. This skill is the instruction to set effort.
 6. **Follow the advice in the line:**
-   - "Subagent effort one level lower": set subagent effort one level below what you would choose.
-   - "Lowest subagent effort that holds quality": use the lowest effort that still does the job well.
    - "No new parallel fan-outs": do not start several subagents at once. Finish what is running.
    - "5h limit reached": start no new subagents.
 7. **Say so if the line and the task disagree.** For example, a risky change while limits are out. Say it in one line and ask the user, rather than spend quietly.
@@ -61,18 +63,18 @@ This usually takes a few seconds, and never more than about 30. It refreshes the
 
 ## When the reading is stale or missing
 
-The line then says "Fallback". Use the fallback roles it lists. By default:
+The line then says "Fallback". Use the fallback roles and effort it lists. By default:
 
-- Opus plans and builds.
-- Fable reviews.
-- Sonnet does mechanical work.
+- Opus plans (high) and builds (medium).
+- Fable reviews (high).
+- Sonnet does mechanical work (low).
 
 ## Setup, show and change
 
 When the user asks for these, run the script with the matching command. Show the output.
 
 ```
-node "${CLAUDE_SKILL_DIR}/scripts/budget.mjs" show                  # reading, thresholds, role table, job
+node "${CLAUDE_SKILL_DIR}/scripts/budget.mjs" show                  # reading, pace, thresholds, model and effort tables, job
 node "${CLAUDE_SKILL_DIR}/scripts/budget.mjs" config init           # write every setting out to config.json
 node "${CLAUDE_SKILL_DIR}/scripts/budget.mjs" config set KEY=VALUE  # change settings, see below
 node "${CLAUDE_SKILL_DIR}/scripts/budget.mjs" config reset          # back to the defaults
@@ -88,8 +90,10 @@ These are the settings keys:
   - The mode is `open`, `steady`, `tight`, `out`, `exhausted`, or `all` for all modes.
   - The role is `plan`, `build`, `review`, `final_check` or `mechanical`.
   - The model is `fable`, `opus`, `sonnet` or `haiku`. `final_check` can also be `none`.
+- `effort.<mode>.<role>`: the same modes and roles, with `low`, `medium`, `high`, `xhigh` or `max`.
 - `delegate`: `bigger`, `always` or `spawn_only`.
+- `pace`: `on` or `off`.
 
-For example: `config set open.plan=opus all.mechanical=haiku thresholds.tight=80`.
+For example: `config set open.plan=opus all.mechanical=haiku effort.all.build=high thresholds.tight=80`.
 
 The settings are the user's own, in `~/.config/model-budget/config.json`. Every value is written out there, so the user can also edit the file by hand.

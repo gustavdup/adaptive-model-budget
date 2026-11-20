@@ -4,9 +4,9 @@
 //   node budget.mjs                  check: refresh if over 15 min old, then print the Budget line
 //   node budget.mjs hook             for the UserPromptSubmit hook: print the line now, refresh in the background
 //   node budget.mjs refresh [--force] [--quiet]
-//   node budget.mjs show             reading, thresholds, role table, background job, config problems
+//   node budget.mjs show             reading, pace, thresholds, model and effort tables, background job, config problems
 //   node budget.mjs config           print the effective config as JSON
-//   node budget.mjs config set KEY=VALUE ...   e.g. thresholds.tight=80 open.plan=opus all.mechanical=haiku delegate=always
+//   node budget.mjs config set KEY=VALUE ...   e.g. thresholds.tight=80 open.plan=opus all.mechanical=haiku effort.all.build=high delegate=always pace=off
 //   node budget.mjs config init      write every setting out to config.json, ready to edit by hand
 //   node budget.mjs config reset     back to the defaults (written out in full)
 //   node budget.mjs job on|off|status
@@ -20,7 +20,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync,
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_ROLES, DELEGATE, MAX_FILE_BYTES, MODES, ROLES, buildBudget, clean, fullConfig, longUntil, needsRefresh, parseLimits, resolveConfig, rolesFor, rolesText, validModel } from "./core.mjs";
+import { DEFAULT_EFFORT, DEFAULT_ROLES, DELEGATE, EFFORTS, MAX_FILE_BYTES, MODES, PACE, PACE_LOOSER, PACE_TIGHTER, ROLES, buildBudget, clean, effortFor, fullConfig, longUntil, needsRefresh, parseLimits, resolveConfig, rolesFor, rolesText, validModel } from "./core.mjs";
 import { fetchLimits, findClaude } from "./fetch.mjs";
 import { installJob, jobStatus, uninstallJob } from "./job.mjs";
 
@@ -138,7 +138,7 @@ async function waitForLock(path, maxMs) {
 
 // ---------- hook ----------
 
-const SAFE_FALLBACK = `Budget: unknown. Fallback: ${rolesText(rolesFor(null, null, DEFAULT_ROLES))}`;
+const SAFE_FALLBACK = `Budget: unknown. Fallback: ${rolesText(rolesFor(null, null, DEFAULT_ROLES), effortFor(null, null, DEFAULT_EFFORT))}`;
 
 /** Print the line straight away; start a background refresh when the reading is over 15 min old. */
 export function hook(dir, { nowMs = Date.now(), spawnRefresh = defaultSpawn } = {}) {
@@ -172,10 +172,18 @@ export function showText(dir, nowMs = Date.now()) {
   if (limits?.last_error) out.push(`Last check failed at ${limits.last_error.at}: ${limits.last_error.message}`);
   const t = cfg.thresholds;
   out.push(`Thresholds: open under ${t.steady} %, steady ${t.steady} to ${t.tight} %, tight ${t.tight} to ${t.out} %, out ${t.out} % or more, exhausted 100 %.`);
-  out.push(`Delegate: ${cfg.delegate} (bigger: plan and review in subagents on tasks bigger than a quick fix; always: every task; spawn_only: only when spawning anyway).`);
+  out.push(`Delegate: ${cfg.delegate} (bigger: plan and review in subagents on medium and large tasks; always: every task; spawn_only: only when spawning anyway).`);
+  out.push(`Pace: ${cfg.pace} (on: on pace for ${PACE_TIGHTER.five_hour} % or more at the reset (${PACE_TIGHTER.seven_day} % for the weekly windows) moves a window one mode tighter, at most to tight; on pace for under ${PACE_LOOSER} % with half the window gone moves it one mode looser, never from out).`);
+  for (const [key, label] of [["five_hour", "5h"], ["seven_day", "week"], ["fable", "Fable"]]) {
+    const w = b[key];
+    if (w && w.pace !== null && w.pace !== undefined) out.push(`  ${label}: ${w.used} % used, on pace for ${w.pace} % at the reset${w.mode !== w.used_mode ? ` (${w.used_mode} by % used, ${w.mode} by pace)` : ""}.`);
+  }
   out.push("", "Roles. Plan, build, review and final check follow the Fable mode, or the weekly mode once that is tight or worse and further along. Mechanical follows the weekly mode.");
   out.push(`  ${pad("mode", 10)}${ROLES.map((r) => pad(r, 12)).join("")}`);
   for (const m of MODES) out.push(`  ${pad(m, 10)}${ROLES.map((r) => pad(cfg.roles[m][r], 12)).join("")}`);
+  out.push("", "Subagent effort, picked by the same modes as the models.");
+  out.push(`  ${pad("mode", 10)}${ROLES.map((r) => pad(r, 12)).join("")}`);
+  for (const m of MODES) out.push(`  ${pad(m, 10)}${ROLES.map((r) => pad(cfg.effort[m][r], 12)).join("")}`);
   const job = jobStatus();
   out.push("", `Background job: ${job}.`);
   if (job.startsWith("on") && b.status !== "fresh") out.push(`  Warning: the job is on but the reading is not fresh. Check ${join(dir, "run.log")}, then re-run setup.`);
@@ -196,22 +204,35 @@ export function applySettings(raw, pairs) {
     const value = pair.slice(eq + 1).trim();
     const parts = key.split(".");
     if (parts[0] === "roles") parts.shift();
+    const allModes = (mode) => (mode === "*" || mode === "all" ? MODES : [mode]);
+    const isMode = (mode) => MODES.includes(mode) || mode === "*" || mode === "all";
     if (key === "delegate") {
       if (!DELEGATE.includes(value)) throw new Error(`delegate must be ${DELEGATE.join(", ")}`);
       next.delegate = value;
+    } else if (key === "pace") {
+      if (!PACE.includes(value)) throw new Error(`pace must be ${PACE.join(" or ")}`);
+      next.pace = value;
+    } else if (parts[0] === "effort") {
+      if (parts.length !== 3) throw new Error(`${key}: use effort.<mode>.<role>, for example effort.all.build=high`);
+      const [, mode, role] = parts;
+      if (!isMode(mode)) throw new Error(`${key}: mode must be ${MODES.join(", ")} or all`);
+      if (!ROLES.includes(role)) throw new Error(`${key}: role must be ${ROLES.join(", ")}`);
+      if (!EFFORTS.includes(value)) throw new Error(`${key}: effort must be ${EFFORTS.join(", ")}`);
+      next.effort = next.effort ?? {};
+      for (const m of allModes(mode)) next.effort[m] = { ...(next.effort[m] ?? {}), [role]: value };
     } else if (parts[0] === "thresholds" && parts.length === 2) {
       const n = Number(value);
       if (!["steady", "tight", "out"].includes(parts[1])) throw new Error(`${key}: use thresholds.steady, thresholds.tight or thresholds.out`);
       if (!Number.isInteger(n) || n < 1 || n > 99) throw new Error(`${key} must be a whole number from 1 to 99`);
       next.thresholds = { ...(next.thresholds ?? {}), [parts[1]]: n };
-    } else if (parts.length === 2 && (MODES.includes(parts[0]) || parts[0] === "*" || parts[0] === "all")) {
+    } else if (parts.length === 2 && isMode(parts[0])) {
       const [mode, role] = parts;
       if (!ROLES.includes(role)) throw new Error(`${key}: role must be ${ROLES.join(", ")}`);
       if (!validModel(role, value)) throw new Error(`${key}: model must be ${role === "final_check" ? "fable, opus, sonnet, haiku or none" : "fable, opus, sonnet or haiku"}`);
       next.roles = next.roles ?? {};
-      for (const m of mode === "*" || mode === "all" ? MODES : [mode]) next.roles[m] = { ...(next.roles[m] ?? {}), [role]: value };
+      for (const m of allModes(mode)) next.roles[m] = { ...(next.roles[m] ?? {}), [role]: value };
     } else {
-      throw new Error(`unknown setting "${key}". Use thresholds.steady|tight|out, <mode>.<role> (mode ${MODES.join("/")} or all), or delegate`);
+      throw new Error(`unknown setting "${key}". Use thresholds.steady|tight|out, <mode>.<role> (mode ${MODES.join("/")} or all), effort.<mode>.<role>, delegate or pace`);
     }
   }
   const { problems } = resolveConfig(next);
@@ -269,8 +290,8 @@ async function main(argv) {
     case "config": {
       const sub = rest[0] ?? "show";
       if (sub === "show") {
-        const { thresholds, roles, delegate, problems } = loadConfig(dir);
-        console.log(JSON.stringify({ thresholds, roles, delegate, problems }, null, 2));
+        const { thresholds, roles, effort, delegate, pace, problems } = loadConfig(dir);
+        console.log(JSON.stringify({ thresholds, delegate, pace, roles, effort, problems }, null, 2));
         return 0;
       }
       if (sub === "init") {
