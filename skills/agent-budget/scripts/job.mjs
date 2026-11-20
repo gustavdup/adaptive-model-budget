@@ -4,13 +4,14 @@
 // path on every plugin update.
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { VERSION } from "./core.mjs";
 
 export const LABEL = "local.model-budget.refresh";
 export const CRON_MARKER = "# model-budget";
-export const SCRIPT_FILES = ["core.mjs", "fetch.mjs", "job.mjs", "budget.mjs"];
+export const SCRIPT_FILES = ["core.mjs", "history.mjs", "fetch.mjs", "transcripts.mjs", "job.mjs", "budget.mjs"];
 
 const xml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 /** Single-quote for sh, safe for any path. */
@@ -19,7 +20,7 @@ export const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 export const plistPath = (home = homedir()) => join(home, "Library", "LaunchAgents", `${LABEL}.plist`);
 
 /** The launchd plist. Absolute paths everywhere: launchd's PATH has no Homebrew. */
-export function plistFor({ node, script, claude, dir }) {
+export function plistFor({ node, script, claude, dir, configDir = null }) {
   const str = (s) => `<string>${xml(s)}</string>`;
   const path = [...new Set([dirname(node), dirname(claude), "/usr/bin", "/bin", "/usr/sbin", "/sbin"])].join(":");
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -32,7 +33,8 @@ export function plistFor({ node, script, claude, dir }) {
   <key>EnvironmentVariables</key>
   <dict>
     <key>MODEL_BUDGET_CLAUDE</key>${str(claude)}
-    <key>MODEL_BUDGET_DIR</key>${str(dir)}
+    <key>MODEL_BUDGET_DIR</key>${str(dir)}${configDir ? `
+    <key>CLAUDE_CONFIG_DIR</key>${str(configDir)}` : ""}
     <key>PATH</key>${str(path)}
   </dict>
   <key>StartInterval</key><integer>900</integer>
@@ -46,9 +48,10 @@ export function plistFor({ node, script, claude, dir }) {
 }
 
 /** The crontab line: every 15 minutes, ending in the marker so uninstall removes only this line. */
-export function cronLineFor({ node, script, claude, dir }) {
+export function cronLineFor({ node, script, claude, dir, configDir = null }) {
   const path = [...new Set([dirname(node), dirname(claude), "/usr/local/bin", "/usr/bin", "/bin"])].join(":");
-  return `*/15 * * * * PATH=${shq(path)} MODEL_BUDGET_CLAUDE=${shq(claude)} MODEL_BUDGET_DIR=${shq(dir)} ${shq(node)} ${shq(script)} refresh --force --quiet >> ${shq(join(dir, "run.log"))} 2>&1 ${CRON_MARKER}`;
+  const cfg = configDir ? ` CLAUDE_CONFIG_DIR=${shq(configDir)}` : "";
+  return `*/15 * * * * PATH=${shq(path)} MODEL_BUDGET_CLAUDE=${shq(claude)} MODEL_BUDGET_DIR=${shq(dir)}${cfg} ${shq(node)} ${shq(script)} refresh --force --quiet >> ${shq(join(dir, "run.log"))} 2>&1 ${CRON_MARKER}`;
 }
 
 /**
@@ -99,14 +102,41 @@ function writeCrontab(text) {
 
 const uid = () => process.getuid?.() ?? 0;
 
-/** Copy the scripts to <dir>/bin, then install the job for this platform. Returns a short summary. */
-export function installJob({ dir, claude, node = stableNode(), sourceDir, platform = process.platform, home = homedir() }) {
-  if (platform !== "darwin" && platform !== "linux") throw new Error(`no background job on ${platform}; the hook still keeps the reading fresh while you work`);
-  if (!claude) throw new Error("could not find the claude command (set MODEL_BUDGET_CLAUDE to its full path)");
+/** Copy the scripts to <dir>/bin, with a VERSION file so a stale copy can be spotted. */
+export function copyScripts(dir, sourceDir) {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   for (const f of SCRIPT_FILES) cpSync(join(sourceDir, f), join(bin, f));
-  const opts = { node, script: join(bin, "budget.mjs"), claude, dir };
+  writeFileSync(join(bin, "VERSION"), `${VERSION}
+`, { mode: 0o600 });
+  return bin;
+}
+
+/**
+ * When the job is on and its copy of the scripts is from another plugin version, copy the current
+ * ones over. The job's command line points at <dir>/bin/budget.mjs, so nothing else needs changing.
+ * Returns true when it copied. Cheap when nothing is needed: one small read.
+ */
+export function syncJobScripts(dir, sourceDir) {
+  const bin = join(dir, "bin");
+  let have;
+  try {
+    have = readFileSync(join(bin, "VERSION"), "utf8").trim();
+  } catch (e) {
+    if (e.code === "ENOENT" && existsSync(join(bin, "budget.mjs"))) have = "unknown"; // a copy from before VERSION files
+    else return false;
+  }
+  if (have === VERSION) return false;
+  copyScripts(dir, sourceDir);
+  return true;
+}
+
+/** Copy the scripts to <dir>/bin, then install the job for this platform. Returns a short summary. */
+export function installJob({ dir, claude, node = stableNode(), sourceDir, platform = process.platform, home = homedir(), configDir = process.env.CLAUDE_CONFIG_DIR || null }) {
+  if (platform !== "darwin" && platform !== "linux") throw new Error(`no background job on ${platform}; the hook still keeps the reading fresh while you work`);
+  if (!claude) throw new Error("could not find the claude command (set MODEL_BUDGET_CLAUDE to its full path)");
+  const bin = copyScripts(dir, sourceDir);
+  const opts = { node, script: join(bin, "budget.mjs"), claude, dir, configDir };
 
   if (platform === "darwin") {
     const p = plistPath(home);

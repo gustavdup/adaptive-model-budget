@@ -9,7 +9,7 @@ allowed-tools: Bash(node *agent-budget/scripts/budget.mjs*)
 
 1. Tell the user what this does:
    - It removes the background job, if one is installed (launchd on macOS, the marked cron line on Linux).
-   - It deletes `~/.config/model-budget`, including their settings.
+   - It deletes the model-budget files in `~/.config/model-budget`, including their settings and usage history.
    - It cannot be undone.
 
    Ask them to confirm with AskUserQuestion. The options are "Yes, remove it" and "Cancel".

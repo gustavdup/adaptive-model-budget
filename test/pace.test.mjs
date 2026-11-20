@@ -131,9 +131,28 @@ test("the 5h window gets pace too", () => {
   const b = buildBudget(limits({ five_hour: win(40, 180) }), resolveConfig(null), NOW); // about 2 of 5 hours gone at the reading
   assert.equal(b.five_hour.pace, 102);
   assert.equal(b.five_hour.mode, "open");
-  const fast = buildBudget(limits({ five_hour: win(45, 180) }), resolveConfig(null), NOW);
-  assert.equal(fast.five_hour.mode, "steady");
-  assert.match(fast.line, /5h 45% steady \(on pace for 114%, resets in 3h\)/);
+  const fast = buildBudget(limits({ five_hour: win(70, 180) }), resolveConfig(null), NOW);
+  assert.equal(fast.five_hour.mode, "tight");
+  assert.match(fast.line, /5h 70% tight \(on pace for 178%, resets in 3h\)/);
+});
+
+test("pace steps that change nothing are undone", () => {
+  // 5h open to steady: no advice changes.
+  const b = buildBudget(limits({ five_hour: win(45, 180) }), resolveConfig(null), NOW);
+  assert.equal(b.five_hour.pace, 114);
+  assert.equal(b.five_hour.mode, "open");
+  assert.doesNotMatch(b.line, /on pace/);
+  // Week open to steady: the mechanical row is the same, so nothing changes.
+  const w = buildBudget(limits({ seven_day: win(16, WEEK - 17 * 60) }), resolveConfig(null), NOW);
+  assert.equal(w.seven_day.mode, "open");
+  // With a different steady mechanical row, the step stays.
+  const c = buildBudget(limits({ seven_day: win(16, WEEK - 17 * 60) }), resolveConfig({ roles: { steady: { mechanical: "haiku" } } }), NOW);
+  assert.equal(c.seven_day.mode, "steady");
+  assert.equal(c.roles.mechanical, "haiku");
+  // Fable open to steady moves planning off Fable, so it stays.
+  const f = buildBudget(limits({ fable: win(45, 5 * day) }), resolveConfig(null), NOW); // on pace for 157 %
+  assert.equal(f.fable.mode, "steady");
+  assert.equal(f.roles.plan, "opus");
 });
 
 // ---------- effort ----------
@@ -164,7 +183,7 @@ test("pace setting is checked", () => {
 
 test("the full config writes effort and pace out", () => {
   const f = fullConfig(resolveConfig(null));
-  assert.deepEqual(Object.keys(f), ["_help", "thresholds", "delegate", "pace", "roles", "effort"]);
+  assert.deepEqual(Object.keys(f), ["_help", "thresholds", "delegate", "pace", "transcripts", "roles", "effort"]);
   assert.deepEqual(Object.keys(f.effort.out), ["plan", "build", "review", "final_check", "mechanical"]);
   assert.deepEqual(resolveConfig(f).problems, []);
 });

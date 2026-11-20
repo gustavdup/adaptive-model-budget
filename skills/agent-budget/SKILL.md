@@ -17,7 +17,7 @@ Each prompt carries one Budget line from the model-budget hook, like this:
 Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Bigger tasks: plan and review in subagents on these models.
 ```
 
-Each role has a model and then an effort level for its subagents. The line already applies the user's settings, how fast each limit is being used, and the time left before it resets. "On pace for 140%" means the window would reach 140 % at its reset at this rate, so its mode was moved. Read the line and follow it.
+Each role has a model and then an effort level for its subagents. The line already applies the user's settings, how fast each limit is being used, and the time left before it resets. "On pace for 140%" means the window would reach 140 % at its reset at this rate, so its mode was moved. Once there is enough history, pace follows the user's own weekly rhythm. "Heavy day" or "Quiet day" means today is far from the user's usual by this time; the modes already allow for it. Read the line and follow it.
 
 **The user's explicit instruction in the session always wins** over the line. If the user names a model, an effort level, or says not to use subagents, do that.
 
@@ -93,6 +93,7 @@ These are the settings keys:
 - `effort.<mode>.<role>`: the same modes and roles, with `low`, `medium`, `high`, `xhigh` or `max`.
 - `delegate`: `bigger`, `always` or `spawn_only`.
 - `pace`: `on` or `off`.
+- `transcripts`: `off` or `on`. On lets a background check learn the user's weekly rhythm from Claude Code's transcripts (times and token counts only). Only turn it on when the user asks.
 
 For example: `config set open.plan=opus all.mechanical=haiku effort.all.build=high thresholds.tight=80`.
 

@@ -10,7 +10,9 @@ This is a Claude Code plugin, with the plugin id `model-budget`. It picks a mode
 hooks/hooks.json                  UserPromptSubmit -> budget.mjs hook
 skills/agent-budget/SKILL.md      the main skill: how to pick models from the Budget line
 skills/agent-budget/scripts/
-  core.mjs                        pure rules: config merge, modes, roles, the line. No I/O.
+  core.mjs                        pure rules: config merge, modes, roles, pace, the line. No I/O.
+  history.mjs                     pure: the usage history (4-hour blocks), pattern pace, day check. No I/O.
+  transcripts.mjs                 the optional transcript scan (off by default)
   fetch.mjs                       the usage fetch: `claude -p` + one get_usage control request
   job.mjs                         optional launchd (macOS) / cron (Linux) job
   budget.mjs                      the CLI: check, hook, refresh, show, config, job, uninstall
@@ -34,8 +36,10 @@ The scripts live inside the `agent-budget` skill folder, so the skill also works
   - With no Fable window, Fable counts as `steady`.
 - **Pace.** `paceFor` gives the % a window reaches at its reset at the current rate, from the window length in `WINDOW_MIN`. It is worked out at the time of the reading, so an ageing reading keeps its pace. `pacedMode` moves the mode at most one step: tighter at `PACE_TIGHTER` (110 % for 5h, 130 % for the weekly windows) but never past tight, looser under 70 % with half the window gone (never from out or exhausted). It waits until 10 % of the window has gone. `pace: off` turns it off.
 - **Effort.** A table per mode and role, like the models, picked by the same modes (`effortFor`). It replaces the old "effort one level lower" advice. The skill uses the line's effort as it is: never lower effort twice.
+- **History.** `history.json` holds the weekly % used per 4-hour block of the week (42 blocks, local time) for the current week and the last 6. `refresh` adds each good reading (`recordReading`). Usage comes as whole percents, which is why blocks are 4 hours. A rise of more than 1 point over a gap longer than one block is a guess about when it happened, so those blocks count as half seen. Time from the last reading to a reset counts as quiet. A reset that moves forward by 6 days or more is a new week; a smaller move is the same week. With 2 good weeks (80 % of blocks seen), weekly and Fable pace follow the user's own pattern (`patternShares`, the median per block) and the weekly bar drops to 110 %. The 5h window always uses the straight line: weekly % says nothing about it. `dayCheck` compares today with a band: the usual by the start of the current block to the usual by its end. Heavy or quiet means past the band by at least 3 points, 3 spreads (MAD) and half the usual. Its factor starts at 1 at that edge and grows smoothly (1/3 to 3), so the mode never jumps on one point. It scales the rest of today in the pace. When the pattern has no answer, the straight line and its 130 % bar apply. It is written compact, so it stays under the 16 KB read cap.
+- **Transcripts.** Off unless the user sets `transcripts=on`. Then a background refresh (`refresh --quiet`), at most once a day, streams `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/**/*.jsonl` from the last 35 days. It parses each line that has a `usage` field, keeps and uses only the reply's timestamp and token counts, and stores only 42 shares. No text is kept, printed or sent. It is used until there are 2 weeks of readings. This is the one exception to the 16 KB read cap. Turning it off drops the stored shares.
 - **Config.** It is per user, in `~/.config/model-budget/config.json`, and never in the plugin folder, because plugin updates replace that folder. `config init`, `set` and `reset` write every value out, plus `_help` notes, so the file is easy to edit by hand. Keys starting with `_` are ignored. It is merged per mode and per role over `DEFAULT_ROLES`, `DEFAULT_EFFORT` and `DEFAULT_THRESHOLDS`. New top-level settings must be added to `SETTINGS` in `core.mjs`, `applySettings` and `fullConfig`. Bad values fall back to the default, and the line reports the problem. The line is built from the resolved roles, so it always matches the config.
-- **The job.** It runs a copy of the scripts in `<dir>/bin`, because the plugin cache path changes on every update. It bakes in absolute `node` and `claude` paths.
+- **The job.** It runs a copy of the scripts in `<dir>/bin`, because the plugin cache path changes on every update. It bakes in absolute `node` and `claude` paths, and `CLAUDE_CONFIG_DIR` when set. `bin/VERSION` holds `VERSION` from `core.mjs` (keep it equal to `plugin.json`): the hook copies the scripts over when it differs, so the job follows plugin updates.
 
 ## Rules
 
@@ -45,6 +49,7 @@ The scripts live inside the `agent-budget` skill folder, so the skill also works
   - Never log or print the raw `get_usage` answer. Keep only the three windows.
 - **Isolate the child `claude`.** Keep `--setting-sources ""`, the empty `--mcp-config` and `--no-session-persistence`. These stop the plugin's own hook loading in the child.
 - **Clean its environment.** Drop `ANTHROPIC_API_KEY`, `CLAUDECODE` and `CLAUDE_CODE_*`. Do not use `--bare`, because it skips the subscription login.
+- **Tests never touch a real job.** Run `uninstall --yes` and `job` commands only with a temp `HOME` and a `PATH` without `crontab` (see `cliNoJob` in the tests).
 - **Files.**
   - Write with a temp file and rename.
   - The folder is 0700 and the files are 0600.

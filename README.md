@@ -70,11 +70,19 @@ The line shows each window's percent used, its mode, and the time until it reset
 
 **Pace.** Each reading has the real reset time of each window, for your own account. So the budget also looks at how fast you are going: the % you would reach at the reset at this rate.
 
-- On pace for 110 % or more (130 % for the weekly and Fable windows, since evenings and weekends are quiet): the window moves one mode tighter. For example, 60 % of the week used after 3 days is on pace for 140 %, so steady becomes tight.
+- On pace for 110 % or more (130 % for the weekly and Fable windows until it knows your rhythm, see below): the window moves one mode tighter. For example, 60 % of the week used after 3 days is on pace for 140 %, so steady becomes tight.
 - On pace for under 70 %, with at least half the window gone: one mode looser. For example, Fable at 55 % with a day left is on pace for 64 %, so steady becomes open and Fable plans again.
 - Pace moves a mode by one step at most, and never past tight: only the % used, or Claude's own warning, makes a window out. It waits until 10 % of the window has gone. It never loosens a window that is out or exhausted.
 - The line says "on pace for" only when pace moved the mode.
 - Turn it off with `config set pace=off`.
+
+**Your own rhythm.** The budget keeps a small record of when in the week you use your plan, in 4-hour blocks, in `~/.config/model-budget/history.json`. After 2 full weeks, the weekly and Fable pace follow your rhythm instead of a straight line. If you work weekdays, Friday evening at 75 % is no longer "on pace for 110 %", because your weekend is quiet. The weekly bar for tightening then drops to 110 %.
+
+- It uses the median of the last 6 weeks for each block. One odd week barely moves it, and a lasting change takes over in 3 or 4 weeks.
+- **Heavy and quiet days.** It compares today's use so far with your usual by this time of day. When today is well outside your usual range for this time of day (at least 3 points, and at least half as much again), the line says so, for example `Heavy day: 12 points of the week used today, usually 4 by now.` The rest of today then counts as heavier (or lighter) in the pace.
+- The 5-hour window always uses a straight line.
+- The record only grows while Claude Code runs (or with the background job on). It never leaves your machine.
+- **From day one, optionally.** With `config set transcripts=on`, a background check once a day learns your rhythm from Claude Code's own transcripts on this machine, until there are 2 weeks of readings. It keeps and uses only the time and token counts of each reply, never any text, and stores only 42 numbers. It is off unless you turn it on.
 
 Default models:
 
@@ -126,6 +134,7 @@ config set thresholds.tight=80            # move a threshold
 config set effort.all.build=high          # build subagents on high effort in every mode
 config set effort.tight.review=high       # one effort cell
 config set pace=off                       # modes from % used only
+config set transcripts=on                 # learn your rhythm from transcripts from day one
 config set delegate=always                # plan and review in subagents on every task
 config init                               # write every setting out to the file
 config reset                              # back to the defaults
@@ -141,6 +150,7 @@ Your settings are yours alone. They live in `~/.config/model-budget/config.json`
   "thresholds": { "steady": 50, "tight": 75, "out": 90 },
   "delegate": "bigger",
   "pace": "on",
+  "transcripts": "off",
   "roles": {
     "open":      { "plan": "fable", "build": "opus", "review": "fable", "final_check": "none",  "mechanical": "sonnet" },
     "steady":    { "plan": "opus",  "build": "opus", "review": "fable", "final_check": "none",  "mechanical": "sonnet" },
@@ -166,7 +176,7 @@ Without the job, the reading refreshes in the background while you work, at most
 
 If you want it fresh all the time, turn on the job in `/model-budget:budget-setup`. On macOS it is a launchd job, `local.model-budget.refresh`. On Linux it is one crontab line ending in `# model-budget`. It runs every 15 minutes, and its log is `~/.config/model-budget/run.log`.
 
-After a plugin update, re-run setup and say yes to the job again, so it runs the new version.
+After a plugin update, the job picks up the new version by itself on your next prompt.
 
 ## Skill only, no plugin
 
@@ -174,7 +184,7 @@ Copy `skills/agent-budget` to `~/.claude/skills/agent-budget`. There is no hook 
 
 ## Uninstall
 
-1. Run `/model-budget:budget-uninstall`. This removes the job, if you turned it on, and deletes `~/.config/model-budget`.
+1. Run `/model-budget:budget-uninstall`. This removes the job, if you turned it on, and deletes the model-budget files in `~/.config/model-budget`, including the history.
 2. Run `/plugin uninstall model-budget`.
 3. Optionally, run `/plugin marketplace remove model-budget-marketplace`.
 
@@ -182,7 +192,8 @@ Copy `skills/agent-budget` to `~/.claude/skills/agent-budget`. There is no hook 
 
 - **The plugin's only network use is the usage check, and Claude Code makes it with its own login.** The plugin starts `claude -p` with no prompt and sends one `get_usage` request. That returns the same data `/usage` shows, and it uses no tokens. Like any Claude Code start, the child may make its own start-up calls. Telemetry, error reporting and the auto-updater are turned off for it.
 - **No telemetry.** Nothing is sent anywhere else. The plugin never reads, prints or stores a token.
-- **Only the three limit figures are kept.** They go in `~/.config/model-budget/limits.json`. The folder is mode 0700 and the files are 0600.
+- **Only the three limit figures are kept,** in `~/.config/model-budget/limits.json`, plus the weekly % per 4-hour block in `history.json`. The folder is mode 0700 and the files are 0600.
+- **Transcripts are only read if you turn it on** (`transcripts=on`, off by default). Then, once a day, the plugin goes through the transcripts in `~/.claude/projects` from the last 35 days. It keeps and uses only the time and token counts of each reply. It never keeps, prints or sends any message text. It keeps only the share of tokens in each 4-hour block of the week.
 - **The usage check loads almost nothing.** It starts with no user or project settings, hooks, plugins or MCP servers, and it saves no transcript. Settings and hooks your organisation enforces through managed policy still apply.
 
 ## Troubleshooting

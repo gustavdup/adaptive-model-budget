@@ -3,6 +3,11 @@
 // a model per role and the one-line Budget summary. Everything here is a plain function so it can be
 // tested without touching the disk.
 
+import { dayCheck, patternPace, patternShares } from "./history.mjs";
+
+/** Matches .claude-plugin/plugin.json. The job's copy of the scripts is refreshed when it differs. */
+export const VERSION = "1.2.0";
+
 export const MODES = ["open", "steady", "tight", "out", "exhausted"];
 export const MODELS = ["fable", "opus", "sonnet", "haiku"];
 /** plan, build, review and final_check follow the Fable mode (or the weekly mode once that is tight or worse); mechanical follows the weekly mode. */
@@ -46,6 +51,11 @@ export const PACE_MIN_ELAPSED = 0.1;
  * straight line through the week ignores quiet evenings and weekends.
  */
 export const PACE_TIGHTER = Object.freeze({ five_hour: 110, seven_day: 130, fable: 130 });
+/** With the user's own pattern, quiet times are already counted, so the weekly bar is the same as 5h. */
+export const PACE_TIGHTER_PATTERN = 110;
+/** The optional transcript scan, to learn the usage pattern from day one. Off unless the user turns it on. */
+export const TRANSCRIPTS = ["off", "on"];
+export const DEFAULT_TRANSCRIPTS = "off";
 /** On pace for under this %, with at least PACE_LOOSER_ELAPSED of the window gone: one mode looser. */
 export const PACE_LOOSER = 70;
 export const PACE_LOOSER_ELAPSED = 0.5;
@@ -74,7 +84,7 @@ export function resolveConfig(raw) {
   const src = raw == null ? {} : raw;
   if (!isObj(src)) {
     problems.push("config.json is not a JSON object");
-    return { thresholds: { ...DEFAULT_THRESHOLDS }, roles: cloneRoles(DEFAULT_ROLES), effort: cloneRoles(DEFAULT_EFFORT), delegate: DEFAULT_DELEGATE, pace: DEFAULT_PACE, problems };
+    return { thresholds: { ...DEFAULT_THRESHOLDS }, roles: cloneRoles(DEFAULT_ROLES), effort: cloneRoles(DEFAULT_EFFORT), delegate: DEFAULT_DELEGATE, pace: DEFAULT_PACE, transcripts: DEFAULT_TRANSCRIPTS, problems };
   }
 
   const thresholds = { ...DEFAULT_THRESHOLDS };
@@ -133,12 +143,17 @@ export function resolveConfig(raw) {
     if (PACE.includes(src.pace)) pace = src.pace;
     else problems.push(`pace must be ${PACE.join(" or ")}`);
   }
+  let transcripts = DEFAULT_TRANSCRIPTS;
+  if (src.transcripts !== undefined) {
+    if (TRANSCRIPTS.includes(src.transcripts)) transcripts = src.transcripts;
+    else problems.push(`transcripts must be ${TRANSCRIPTS.join(" or ")}`);
+  }
   // Keys starting with "_" are notes (like "_help") and are ignored.
   for (const k of Object.keys(src)) if (!k.startsWith("_") && !SETTINGS.includes(k)) problems.push(`${k} is not a setting (use ${SETTINGS.join(", ")})`);
-  return { thresholds, roles, effort, delegate, pace, problems };
+  return { thresholds, roles, effort, delegate, pace, transcripts, problems };
 }
 
-const SETTINGS = ["thresholds", "roles", "effort", "delegate", "pace"];
+const SETTINGS = ["thresholds", "roles", "effort", "delegate", "pace", "transcripts"];
 
 export const CONFIG_HELP = [
   "Your own model-budget settings. Edit this file by hand, run /model-budget:budget-setup, or ask Claude to change them.",
@@ -148,6 +163,7 @@ export const CONFIG_HELP = [
   "effort: the effort for each role's subagents in each mode, picked by the same mode as the model. Levels: low, medium, high, xhigh, max.",
   "delegate: when plan and review go to subagents. bigger (medium and large tasks), always, or spawn_only.",
   "pace: on or off. On: a window used fast for the time gone moves one mode tighter (at most to tight), and one used slowly near its reset moves one mode looser. Never looser at the out threshold or over.",
+  "transcripts: off or on. On: once a day, learn your usual weekly rhythm from the times and token counts in Claude Code's local transcripts, so pace follows it from day one. Only times and counts are kept and used, never text. Off: the rhythm is learnt from the readings over 2 to 3 weeks.",
   "A bad value falls back to its default and the Budget line says so. Delete this file to go back to all the defaults.",
 ];
 
@@ -161,7 +177,7 @@ export function fullConfig(cfg) {
     }
     return out;
   };
-  return { _help: CONFIG_HELP, thresholds: { ...cfg.thresholds }, delegate: cfg.delegate, pace: cfg.pace, roles: table(cfg.roles), effort: table(cfg.effort) };
+  return { _help: CONFIG_HELP, thresholds: { ...cfg.thresholds }, delegate: cfg.delegate, pace: cfg.pace, transcripts: cfg.transcripts ?? DEFAULT_TRANSCRIPTS, roles: table(cfg.roles), effort: table(cfg.effort) };
 }
 
 export const allowedModels = (role) => (role === "final_check" ? [...MODELS, "none"] : MODELS);
@@ -284,16 +300,21 @@ export function pacedMode(mode, pace, resetsInMin, windowMin, tighterAt = PACE_T
  * `windowMin` (the window's length) turns on pace; without it the mode comes from the % used alone.
  * Pace is worked out at `readMs`, the time of the reading, so an ageing reading keeps its pace.
  */
-export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS, windowMin = null, readMs = nowMs, tighterAt = undefined) {
+export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS, windowMin = null, readMs = nowMs, tighterAt = undefined, paceOf = null) {
   if (!w) return null;
   if (Date.parse(w.resets_at) <= nowMs) return { used: 0, mode: "open", used_mode: "open", pace: null, resets_at: w.resets_at, resets_in_min: 0 };
   const used = Math.round(w.used);
   const mins = Math.max(0, Math.round((Date.parse(w.resets_at) - nowMs) / 60_000));
   const usedMode = modeFor(used, w.severity, thresholds);
   const readMins = Math.round((Date.parse(w.resets_at) - readMs) / 60_000);
-  const pace = windowMin ? paceFor(used, readMins, windowMin) : null;
-  const mode = pacedMode(usedMode, pace, readMins, windowMin, tighterAt);
-  return { used, mode, used_mode: usedMode, pace, resets_at: w.resets_at, resets_in_min: mins };
+  // paceOf (the user's own pattern) replaces the straight line when it has an answer. The bar to
+  // tighten follows whichever one answered.
+  const fromPattern = windowMin && paceOf ? paceOf(used) : null;
+  const pace = !windowMin ? null : fromPattern ?? paceFor(used, readMins, windowMin);
+  const bar = fromPattern !== null && fromPattern !== undefined ? PACE_TIGHTER_PATTERN : tighterAt;
+  const mode = pacedMode(usedMode, pace, readMins, windowMin, bar);
+  const pace_from = pace === null ? null : fromPattern !== null && fromPattern !== undefined ? "pattern" : "line";
+  return { used, mode, used_mode: usedMode, pace, pace_from, resets_at: w.resets_at, resets_in_min: mins };
 }
 
 /**
@@ -386,7 +407,7 @@ export function clean(s) {
 export const isoSeconds = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 /** The whole budget: what budget.json holds and what the hook prints. */
-export function buildBudget(limits, config, nowMs) {
+export function buildBudget(limits, config, nowMs, history = null) {
   const cfg = config ?? resolveConfig(null);
   const status = readingStatus(limits, nowMs);
   const base = { schema_version: 1, at: isoSeconds(nowMs), limits_fetched_at: limits?.fetched_at ?? null, status };
@@ -403,20 +424,45 @@ export function buildBudget(limits, config, nowMs) {
     return { ...base, five_hour: null, seven_day: null, fable: null, roles, effort, line };
   }
 
-  const len = (key) => (cfg.pace === "off" ? null : WINDOW_MIN[key]);
+  const paceOn = cfg.pace !== "off";
+  const len = (key) => (paceOn ? WINDOW_MIN[key] : null);
   const readAt = Date.parse(limits.fetched_at);
+  const fableReadAt = Date.parse(limits.fable_fetched_at ?? limits.fetched_at);
+  // The user's own weekly rhythm, when there is enough history. The 5h window keeps the straight line:
+  // the history is in weekly %, which says nothing about a 5-hour window.
+  const pattern = paceOn && history ? patternShares(history, { transcripts: cfg.transcripts === "on" }) : null;
+  const day = pattern?.source === "readings" ? dayCheck(history, readAt) : null;
+  const weekly = (w, at) => {
+    if (!pattern || !w) return [PACE_TIGHTER.seven_day, null];
+    const resetMs = Date.parse(w.resets_at);
+    return [PACE_TIGHTER.seven_day, (used) => patternPace(used, resetMs, at, WINDOW_MIN.seven_day, pattern.shares, day)];
+  };
   const five_hour = budgetWindow(limits.five_hour, nowMs, cfg.thresholds, len("five_hour"), readAt, PACE_TIGHTER.five_hour);
-  const seven_day = budgetWindow(limits.seven_day, nowMs, cfg.thresholds, len("seven_day"), readAt, PACE_TIGHTER.seven_day);
+  const seven_day = budgetWindow(limits.seven_day, nowMs, cfg.thresholds, len("seven_day"), readAt, ...weekly(limits.seven_day, readAt));
   // A Fable window carried over from an older answer is dropped once it is stale itself.
   const fableFresh = ageMs(limits.fable_fetched_at ?? limits.fetched_at, nowMs) <= STALE_AFTER_MS;
-  const fable = fableFresh ? budgetWindow(limits.fable, nowMs, cfg.thresholds, len("fable"), Date.parse(limits.fable_fetched_at ?? limits.fetched_at), PACE_TIGHTER.fable) : null;
+  const fable = fableFresh ? budgetWindow(limits.fable, nowMs, cfg.thresholds, len("fable"), fableReadAt, ...weekly(limits.fable, fableReadAt)) : null;
+  // A pace step between open and steady (either way) that changes nothing only adds noise: undo it.
+  // 5h steady has no advice, and weekly steady only matters when its mechanical row differs from open.
+  const openSteady = (w) => w && w.mode !== w.used_mode && ["open", "steady"].includes(w.mode) && ["open", "steady"].includes(w.used_mode);
+  const undo = (w) => Object.assign(w, { mode: w.used_mode });
+  if (openSteady(five_hour)) undo(five_hour);
+  const sameRow = (t) => WEEKLY_ROLES.every((r) => t.open[r] === t.steady[r]);
+  if (openSteady(seven_day) && sameRow(cfg.roles) && sameRow(cfg.effort ?? DEFAULT_EFFORT)) undo(seven_day);
   const roles = rolesFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.roles);
   const effort = effortFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.effort);
   const ageMin = Math.round(ageMs(limits.fetched_at, nowMs) / 60_000);
   const age = ageMs(limits.fetched_at, nowMs) > REFRESH_AFTER_MS ? ` Reading ${ageMin} min old.` : "";
-  const head = `Budget: ${windowText("5h", five_hour, true)} · ${windowText("week", seven_day, true)} · ${windowText("Fable", fable, false)}.${age}`;
+  const head = `Budget: ${windowText("5h", five_hour, true)} · ${windowText("week", seven_day, true)} · ${windowText("Fable", fable, false)}.${dayText(day)}${age}`;
   // With the 5-hour limit reached, no subagents at all: drop the delegate sentence.
   const delegate = five_hour?.mode === "exhausted" ? "" : delegateText(cfg.delegate);
   const line = clean(`${head} ${rolesText(roles, effort)}${delegate}${adviceText(five_hour?.mode)}${problemText(cfg.problems)}`);
-  return { ...base, five_hour, seven_day, fable, roles, effort, line };
+  return { ...base, five_hour, seven_day, fable, pace_source: pattern ? pattern.source : paceOn ? "straight line" : "off", day, roles, effort, line };
+}
+
+/** " Heavy day: 12 points of the week used today, usually 4 by now." */
+function dayText(day) {
+  if (!day || day.kind === "usual") return "";
+  const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
+  return ` ${day.kind === "heavy" ? "Heavy" : "Quiet"} day: ${fmt(day.actual)} points of the week used today, usually ${fmt(day.typical)} by now.`;
 }
