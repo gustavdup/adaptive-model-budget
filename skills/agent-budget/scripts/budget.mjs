@@ -16,11 +16,11 @@
 // budget.json, history.json. Folder 0700, files 0600, written with a temp file and rename.
 
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, ftruncateSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_EFFORT, DEFAULT_ROLES, DELEGATE, EFFORTS, MAX_FILE_BYTES, MODES, PACE, PACE_LOOSER, PACE_TIGHTER, PACE_TIGHTER_PATTERN, ROLES, TRANSCRIPTS, buildBudget, clean, effortFor, fullConfig, longUntil, needsRefresh, parseLimits, resolveConfig, rolesFor, rolesText, validModel } from "./core.mjs";
+import { DEFAULT_EFFORT, DEFAULT_ROLES, DELEGATE, EFFORTS, MAX_FILE_BYTES, MODES, PACE, PACE_LOOSER, PACE_TIGHTER, PACE_TIGHTER_PATTERN, ROLES, TRANSCRIPTS, buildBudget, clean, effortFor, fullConfig, longUntil, needsRefresh, pacedWindows, parseLimits, resolveConfig, rolesFor, rolesText, validModel } from "./core.mjs";
 import { fetchLimits, findClaude } from "./fetch.mjs";
 import { MIN_WEEKS, goodWeeks, parseHistory, recordReading } from "./history.mjs";
 import { scanTranscripts } from "./transcripts.mjs";
@@ -31,6 +31,9 @@ const LOCK_STALE_MS = 60_000;
 export const OWN_FILES = ["config.json", "limits.json", "budget.json", "history.json", "refresh.lock", "run.log", "bin"];
 /** The transcript scan runs at most this often, and only in a background refresh. */
 const SCAN_EVERY_MS = 24 * 3_600_000;
+/** run.log (the job's output) is cut back to its last LOG_KEEP bytes once it passes LOG_MAX. */
+const LOG_MAX = 64 * 1024;
+const LOG_KEEP = 16 * 1024;
 
 export const configDir = (env = process.env) => env.MODEL_BUDGET_DIR || join(homedir(), ".config", "model-budget");
 const paths = (dir) => ({
@@ -80,14 +83,38 @@ export const currentBudget = (dir, nowMs = Date.now()) => buildBudget(loadLimits
 function recordHistory(dir, file, nowMs) {
   try {
     let h = loadHistory(dir);
-    if (file.seven_day && file.fetched_at) h = recordReading(h, { at: file.fetched_at, used: file.seven_day.used, resets_at: file.seven_day.resets_at });
+    // The history makes its own call on a held drop, so it gets the % as read.
+    const used = file.held?.seven_day ?? file.seven_day?.used;
+    if (file.seven_day && file.fetched_at) h = recordReading(h, { at: file.fetched_at, used, resets_at: file.seven_day.resets_at });
     const on = loadConfig(dir).transcripts === "on";
     if (!on) h.transcripts = null;
     writeAtomic(paths(dir).history, h, { compact: true });
-    return on && !(nowMs - Date.parse(h.transcripts?.scanned_at ?? 0) < SCAN_EVERY_MS);
+    // Once the readings give the pattern, the transcripts are no longer used: stop scanning.
+    return on && goodWeeks(h).length < MIN_WEEKS && !(nowMs - Date.parse(h.transcripts?.scanned_at ?? 0) < SCAN_EVERY_MS);
   } catch {
     return false;
   }
+}
+
+/** Keep run.log private and small. It is cut in place, because the job writes to it in append mode. */
+export function tidyLog(dir) {
+  const p = join(dir, "run.log");
+  try {
+    const st = statSync(p);
+    if (st.mode & 0o077) chmodSync(p, 0o600);
+    if (st.size <= LOG_MAX) return;
+    const fd = openSync(p, "r+");
+    try {
+      const buf = Buffer.alloc(LOG_KEEP);
+      const n = readSync(fd, buf, 0, LOG_KEEP, st.size - LOG_KEEP);
+      const text = buf.subarray(0, n);
+      const keep = text.subarray(text.indexOf(10) + 1); // from the first whole line
+      writeSync(fd, keep, 0, keep.length, 0);
+      ftruncateSync(fd, keep.length);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {}
 }
 
 /**
@@ -165,8 +192,16 @@ export async function refresh(dir, { force = false, now = () => Date.now(), fetc
     const prev = loadLimits(dir);
     if (!force && !needsRefresh(prev, now())) return { ran: false, ok: true, budget: currentBudget(dir, now()) };
     const { ok, file } = await fetch(prev, { claude: findClaude(env), now });
+    if (ok) {
+      scanDue = recordHistory(dir, file, now()) && scan;
+      // Note which windows pace moves tighter now, so the next reading keeps them there unless pace
+      // drops well under the bar.
+      try {
+        file.paced = pacedWindows(buildBudget(parseLimits(file), loadConfig(dir), now(), loadHistory(dir)));
+      } catch {}
+    }
     writeAtomic(p.limits, file);
-    if (ok) scanDue = recordHistory(dir, file, now()) && scan;
+    tidyLog(dir);
     const budget = currentBudget(dir, now());
     writeAtomic(p.budget, budget);
     result = { ran: true, ok, budget, error: ok ? null : file.last_error?.message };
@@ -220,10 +255,10 @@ export function showText(dir, nowMs = Date.now()) {
   const out = [b.line, ""];
   if (limits?.fetched_at) out.push(`Reading: ${longUntil(Math.max(0, Math.round((nowMs - Date.parse(limits.fetched_at)) / 60_000)))} old (${limits.fetched_at}).`);
   else out.push("Reading: none yet.");
-  if (limits?.last_error) out.push(`Last check failed at ${limits.last_error.at}: ${limits.last_error.message}`);
+  if (limits?.last_error) out.push(`Last check failed at ${limits.last_error.at}${limits.last_error.count > 1 ? ` (${limits.last_error.count} in a row)` : ""}: ${limits.last_error.message}`);
   const t = cfg.thresholds;
   out.push(`Thresholds: open under ${t.steady} %, steady ${t.steady} to ${t.tight} %, tight ${t.tight} to ${t.out} %, out ${t.out} % or more, exhausted 100 %.`);
-  out.push(`Delegate: ${cfg.delegate} (bigger: a review subagent for medium tasks, plan and review subagents for large ones; always: plan and review for every task that changes code; spawn_only: only when spawning anyway).`);
+  out.push(`Delegate: ${cfg.delegate} (bigger: a review subagent for medium tasks, and for large ones planning on the plan model too; always: both for every task that changes code; spawn_only: only when spawning anyway).`);
   out.push(`Pace: ${cfg.pace} (on: on pace for ${PACE_TIGHTER.five_hour} % or more at the reset moves a window one mode tighter, at most to tight; on pace for under ${PACE_LOOSER} % with half the window gone moves it one mode looser, never from out).`);
   const weeks = goodWeeks(history).length;
   const wk = `${weeks} full week${weeks === 1 ? "" : "s"} of readings`;
@@ -258,6 +293,7 @@ export function showText(dir, nowMs = Date.now()) {
 
 /** Apply KEY=VALUE pairs to a raw config. Throws with a clear message on a bad key or value. */
 export function applySettings(raw, pairs) {
+  const before = new Set(resolveConfig(raw ?? {}).problems);
   const next = structuredClone(raw ?? {});
   for (const pair of pairs) {
     const eq = pair.indexOf("=");
@@ -300,12 +336,17 @@ export function applySettings(raw, pairs) {
       throw new Error(`unknown setting "${key}". Use thresholds.steady|tight|out, <mode>.<role> (mode ${MODES.join("/")} or all), effort.<mode>.<role>, delegate, pace or transcripts`);
     }
   }
-  const { problems } = resolveConfig(next);
+  // Problems that were there before are dropped when the file is written out: only new ones stop it.
+  const problems = resolveConfig(next).problems.filter((p) => !before.has(p));
   if (problems.length) throw new Error(problems.join("; "));
   return next;
 }
 
 // ---------- CLI ----------
+
+const fixedNote = (problems) => {
+  if (problems.length) console.log(`Fixed ${problems.length} bad setting${problems.length === 1 ? "" : "s"} (removed, or back to the default): ${problems.join("; ")}`);
+};
 
 async function main(argv) {
   const dir = configDir();
@@ -375,11 +416,13 @@ async function main(argv) {
         return 0;
       }
       if (sub === "init") {
-        // Write every value out so the file is easy to edit by hand. Keeps any existing settings.
+        // Write every value out so the file is easy to edit by hand. Keeps any existing settings, and
+        // drops bad ones (as config set does). A file that cannot be read at all is left alone.
         const cur = loadConfig(dir);
-        if (cur.problems.length) throw new Error(`config.json has problems, fix them first: ${cur.problems.join("; ")}`);
+        if (cur.raw === null && cur.problems.length) throw new Error(`config.json has problems, fix them first: ${cur.problems.join("; ")}`);
         writeAtomic(paths(dir).config, fullConfig(cur));
         console.log(`Settings file: ${paths(dir).config}`);
+        fixedNote(cur.problems);
         return 0;
       }
       if (sub === "reset") {
@@ -397,6 +440,7 @@ async function main(argv) {
         const b = currentBudget(dir);
         writeAtomic(paths(dir).budget, b);
         console.log(`Saved to ${paths(dir).config}`);
+        fixedNote(next.problems);
         console.log(b.line);
         return 0;
       }

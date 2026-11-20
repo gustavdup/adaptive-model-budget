@@ -27,8 +27,18 @@ const NEW_WEEK_MS = 6 * 24 * 3_600_000;
  * blocks it covers count as half seen. A rise of 0 or 1 (rounding) over a gap is plain quiet time.
  */
 const SURE_POINTS = 1;
-/** A drop of more than this many points within a week is real (a plan change), not a rounding wobble. */
+/** A drop of up to this many points within a week is a rounding wobble. A bigger one is held until confirmed. */
 const WOBBLE_POINTS = 2;
+/** A rise of more than this many points between two readings is held until the next one confirms it. */
+const JUMP_POINTS = 10;
+/**
+ * A confirmed drop to between MIN_SCALE and MAX_SCALE of the last reading, landing on at least
+ * MIN_SCALE_POINTS, is a bigger plan: the stored blocks are scaled to it. Lower is a usage wipe, and
+ * a small % is too rough to scale by. A smaller drop is a slow dip, not a new plan.
+ */
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 0.8;
+const MIN_SCALE_POINTS = 5;
 const UNSURE_SEEN = 0.5;
 /**
  * A day is heavy or quiet when it is this far outside the usual band: at least DAY_MIN_POINTS, and at
@@ -88,7 +98,9 @@ export function parseHistory(raw) {
   if (!isObj(raw) || raw.version !== 1) return h;
   if (isObj(raw.last) && isIso(raw.last.at) && isIso(raw.last.resets_at) && typeof raw.last.used === "number" && Number.isFinite(raw.last.used)) {
     h.last = { at: raw.last.at, used: raw.last.used, resets_at: raw.last.resets_at };
-    if (typeof raw.last.low === "number" && Number.isFinite(raw.last.low)) h.last.low = raw.last.low;
+    // `low` is the 1.2.2 name for a held reading.
+    const held = raw.last.held ?? raw.last.low;
+    if (typeof held === "number" && Number.isFinite(held) && held >= 0 && held <= 1000) h.last.held = held;
   }
   if (validWeek(raw.current) && (raw.current.reset === null || isIso(raw.current.reset))) h.current = { reset: raw.current.reset, v: [...raw.current.v], c: [...raw.current.c] };
   if (Array.isArray(raw.weeks)) h.weeks = raw.weeks.filter(validWeek).slice(0, KEEP_WEEKS).map((w) => ({ v: [...w.v], c: [...w.c] }));
@@ -115,13 +127,16 @@ function spreadInto(week, fromMs, toMs, amount, tz) {
 /**
  * The history after one weekly reading: { at, used, resets_at } (ISO times, used in %).
  * - Same week: the rise since the highest reading so far is spread over the time since the last
- *   reading. A drop of up to 2 points (a rounding wobble) adds nothing and keeps the high. A bigger
- *   drop is held until the next reading: if that one is low too, the drop is real (a plan change, or
- *   a limit reset early) and the count restarts from it; if not, it was an odd answer and is dropped.
- *   A reset time that moves by less than 6 days is still the same week.
+ *   reading. A drop of up to 2 points (a rounding wobble) adds nothing and keeps the high.
+ * - A bigger drop, or a jump of more than 10 points, may be an odd answer: it is held, and the last
+ *   reading stays as it was. The next reading settles it. Nearer the held value: it was real. A real
+ *   drop restarts the count from it (a plan change, or a limit reset early); a real jump is counted.
+ *   Nearer the last reading: the held one was an odd answer and is dropped.
+ * - A real drop on a bigger plan scales the older weeks to the new plan, so the day check compares
+ *   like with like. A real drop with a reset time that moved is an early reset: a new week starts.
  * - New week (the reset time moved forward by 6 days or more): the time from the last reading to the
  *   old reset counts as quiet, the week is closed and kept, and the new reading's % is spread from
- *   the reset to now.
+ *   the reset to now. A smaller move is the same week.
  * - Repeated or slightly older readings change nothing. A reading far older than the last (the clock
  *   was set back) restarts from it.
  */
@@ -139,38 +154,52 @@ export function recordReading(history, reading, tz = localOffsetMs) {
   }
 
   const oldReset = last ? Date.parse(last.resets_at) : NaN;
-  const newWeek = !last || reset - oldReset >= NEW_WEEK_MS;
+  const r = reading.used;
+  const held = typeof last?.held === "number" ? last.held : null;
+  // The held reading was real when this one is nearer it than the last good one.
+  const confirmed = held !== null && Math.abs(r - held) < Math.abs(r - last.used);
+  const realDrop = confirmed && held < last.used;
+  const earlyReset = realDrop && Math.abs(reset - oldReset) > BLOCK_MS;
+  const newWeek = !last || reset - oldReset >= NEW_WEEK_MS || earlyReset;
   if (!newWeek) {
-    const next = { at: reading.at, used: last.used, resets_at: reading.resets_at };
-    if (last.used - reading.used > WOBBLE_POINTS) {
-      if (typeof last.low === "number") {
-        // A second low reading in a row: the drop is real. Restart from the first low, and count
-        // the rise since it.
-        spreadInto(h.current, lastAt, at, Math.max(0, reading.used - last.low), tz);
-        next.used = reading.used;
-      } else {
-        // One low reading may be an odd answer: hold it until the next reading confirms it.
-        next.low = reading.used;
-      }
+    if (realDrop) {
+      // A bigger plan: the same use is now a smaller %. Scale the older weeks (and this week so far)
+      // to the new plan. A drop to near nothing is a usage reset, not a plan change: no scaling.
+      const scale = held / last.used;
+      if (held >= MIN_SCALE_POINTS && scale >= MIN_SCALE && scale <= MAX_SCALE) rescale(h, scale);
+      spreadInto(h.current, lastAt, at, Math.max(0, r - held), tz);
+      h.last = { at: reading.at, used: r, resets_at: reading.resets_at };
+    } else if (confirmed) {
+      spreadInto(h.current, lastAt, at, Math.max(0, r - last.used), tz);
+      h.last = { at: reading.at, used: r, resets_at: reading.resets_at };
+    } else if (last.used - r > WOBBLE_POINTS || r - last.used > JUMP_POINTS) {
+      // Maybe an odd answer: hold it, and keep the last reading until the next one settles it.
+      h.last = { at: last.at, used: last.used, resets_at: last.resets_at, held: r };
     } else {
-      spreadInto(h.current, lastAt, at, Math.max(0, reading.used - last.used), tz);
-      next.used = Math.max(last.used, reading.used);
+      spreadInto(h.current, lastAt, at, Math.max(0, r - last.used), tz);
+      h.last = { at: reading.at, used: Math.max(last.used, r), resets_at: reading.resets_at };
     }
-    h.last = next;
   } else {
     if (last) {
-      // Nothing was read between the last reading and the reset: count it as quiet, not unseen.
-      if (oldReset > lastAt) spreadInto(h.current, lastAt, Math.min(oldReset, at), 0, tz);
+      // Nothing was read between the last reading and the reset: count it as quiet, not unseen. A
+      // held jump the new week cannot confirm any more is counted there, as a guess (half seen).
+      const jump = held !== null && held > last.used ? held - last.used : 0;
+      if (oldReset > lastAt) spreadInto(h.current, lastAt, Math.min(oldReset, at), jump, tz);
       if (h.current.c.some((c) => c)) h.weeks = [{ v: h.current.v, c: h.current.c }, ...h.weeks].slice(0, KEEP_WEEKS);
     }
     h.current = { reset: reading.resets_at, v: zeros(), c: zeros() };
     const weekStart = reset - WEEK_MS;
     // On the first reading ever, the use so far has no time to it: start the record here.
-    if (last && weekStart < at) spreadInto(h.current, Math.max(weekStart, lastAt), at, Math.max(0, reading.used), tz);
-    h.last = { at: reading.at, used: reading.used, resets_at: reading.resets_at };
+    if (last && weekStart < at) spreadInto(h.current, Math.max(weekStart, lastAt), at, Math.max(0, r), tz);
+    h.last = { at: reading.at, used: r, resets_at: reading.resets_at };
   }
-  h.current.reset = reading.resets_at;
+  h.current.reset = h.last.resets_at;
   return h;
+}
+
+/** Scale every stored block (older weeks and this week) by `k`, after a plan change. */
+function rescale(h, k) {
+  for (const w of [h.current, ...h.weeks]) w.v = w.v.map((x) => round2(x * k));
 }
 
 const median = (xs) => {

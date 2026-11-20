@@ -3,8 +3,10 @@ name: budget
 description: Show the current model budget reading, roles and settings. Run by the user as a slash command.
 disable-model-invocation: true
 allowed-tools:
-  - Bash(node *agent-budget/scripts/budget.mjs* show)
-  - Bash(node *agent-budget/scripts/budget.mjs* refresh --force)
+  - Bash(node /*/agent-budget/scripts/budget.mjs show)
+  - Bash(node "/*/agent-budget/scripts/budget.mjs" show)
+  - Bash(node /*/agent-budget/scripts/budget.mjs refresh --force)
+  - Bash(node "/*/agent-budget/scripts/budget.mjs" refresh --force)
 ---
 
 # Budget

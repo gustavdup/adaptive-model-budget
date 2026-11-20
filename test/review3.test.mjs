@@ -37,8 +37,9 @@ function workWeek(perBlock = 2) {
 test("a real drop restarts the count, so later use is still recorded", () => {
   let h = recordReading(null, { at: iso(RESET + D), used: 60, resets_at: iso(NEXT) }, UTC);
   h = recordReading(h, { at: iso(RESET + D + H), used: 0, resets_at: iso(NEXT + 2 * H) }, UTC);
-  h = recordReading(h, { at: iso(RESET + D + 2 * H), used: 40, resets_at: iso(NEXT + 2 * H) }, UTC);
-  assert.equal(sum(h.current.v), 40);
+  // 1 confirms the drop to 0; the jump to 40 is held until 41 confirms it.
+  for (const [i, used] of [1, 40, 41].entries()) h = recordReading(h, { at: iso(RESET + D + (i + 2) * H), used, resets_at: iso(NEXT + 2 * H) }, UTC);
+  assert.equal(sum(h.current.v), 41);
 });
 
 test("a wobble of 2 points still keeps the high", () => {

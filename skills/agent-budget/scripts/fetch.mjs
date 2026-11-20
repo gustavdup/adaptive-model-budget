@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { windowsFromUsage } from "./core.mjs";
+import { holdDrops, windowsFromUsage } from "./core.mjs";
 
 export const TIMEOUT_MS = 30_000;
 const REQUEST_ID = "model-budget-usage";
@@ -112,8 +112,13 @@ export async function fetchLimits(prev, { claude, now = () => Date.now(), ask = 
     // When the Fable window was carried over from the previous answer, keep its own age.
     const carried = windows.fable !== null && windows.fable === prev?.fable;
     const fable_fetched_at = windows.fable === null ? null : carried ? prev.fable_fetched_at ?? prev.fetched_at : at;
-    return { ok: true, file: { version: 1, fetched_at: at, fable_fetched_at, ...windows, last_error: null } };
+    // A big drop waits for the next reading (holdDrops). Which windows pace moved tighter carries over.
+    const file = holdDrops(prev, { version: 1, fetched_at: at, fable_fetched_at, ...windows, last_error: null }, now());
+    if (prev?.paced) file.paced = prev.paced;
+    return { ok: true, file };
   } catch (e) {
-    return { ok: false, file: { ...(prev ?? empty), last_error: { at: new Date(now()).toISOString(), message: String(e.message).slice(0, 300) } } };
+    // Count failures in a row, so a lasting problem is reported even when prompts are far apart.
+    const count = (prev?.last_error && !(Date.parse(prev.last_error.at) < Date.parse(prev.fetched_at ?? 0)) ? prev.last_error.count ?? 1 : 0) + 1;
+    return { ok: false, file: { ...(prev ?? empty), last_error: { at: new Date(now()).toISOString(), message: String(e.message).slice(0, 300), count } } };
   }
 }

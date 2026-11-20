@@ -1,6 +1,6 @@
 {
   "name": "model-budget",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Picks the model for each role (plan, build, review, final check, mechanical) from how much of your Claude plan is left. Adds a Budget line to every prompt.",
   "author": {
     "name": "gustavdup",

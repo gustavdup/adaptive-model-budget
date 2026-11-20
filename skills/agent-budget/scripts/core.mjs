@@ -6,7 +6,7 @@
 import { dayCheck, patternPace, patternShares } from "./history.mjs";
 
 /** Matches .claude-plugin/plugin.json. The job's copy of the scripts is refreshed when this is newer. */
-export const VERSION = "1.2.2";
+export const VERSION = "1.2.3";
 
 export const MODES = ["open", "steady", "tight", "out", "exhausted"];
 export const MODELS = ["fable", "opus", "sonnet", "haiku"];
@@ -59,6 +59,18 @@ export const DEFAULT_TRANSCRIPTS = "off";
 /** On pace for under this %, with at least PACE_LOOSER_ELAPSED of the window gone: one mode looser. */
 export const PACE_LOOSER = 70;
 export const PACE_LOOSER_ELAPSED = 0.5;
+/**
+ * Once pace has moved a window tighter, it stays tighter until pace drops this many points under
+ * the bar, so the mode does not flip back and forth on every reading.
+ */
+export const PACE_HOLD = 10;
+/** A drop of more than this many points within a window is held for one reading: it may be an odd answer. */
+export const DROP_POINTS = 2;
+export const WINDOW_KEYS = ["five_hour", "seven_day", "fable"];
+/** Two reset times within this of each other are the same window: answers can differ slightly. */
+const SAME_RESET_MS = 3_600_000;
+/** True when two reset times are the same window. */
+export const sameReset = (a, b) => Math.abs(Date.parse(a) - Date.parse(b)) <= SAME_RESET_MS;
 
 /** A reading older than this is refreshed (by the hook in the background, or by the skill). */
 export const REFRESH_AFTER_MS = 15 * 60_000;
@@ -161,7 +173,7 @@ export const CONFIG_HELP = [
   "roles: the model for each role in each mode. The Fable limit's mode picks plan, build, review and final_check, unless the weekly limit is tight or worse and further along: then the weekly mode picks them. The weekly mode always picks mechanical.",
   "Models: fable, opus, sonnet, haiku. final_check can also be none.",
   "effort: the effort for each role's subagents in each mode, picked by the same mode as the model. Levels: low, medium, high, xhigh, max.",
-  "delegate: when plan and review go to subagents. bigger (review for medium tasks, plan and review for large ones), always (plan and review for every task that changes code), or spawn_only.",
+  "delegate: when plan and review go to subagents. bigger (a review subagent for medium tasks; for large ones, planning on the plan model too), always (both for every task that changes code), or spawn_only.",
   "pace: on or off. On: a window used fast for the time gone moves one mode tighter (at most to tight), and one used slowly near its reset moves one mode looser. Never looser at the out threshold or over.",
   "transcripts: off or on. On: once a day, learn your usual weekly rhythm from the times and token counts in Claude Code's local transcripts, so pace follows it from day one. Only times and counts are kept and used, never text. Off: the rhythm is learnt from the readings over 2 to 3 weeks.",
   "A bad value falls back to its default and the Budget line says so. Delete this file to go back to all the defaults.",
@@ -206,10 +218,64 @@ export function parseLimits(raw) {
   if (raw.fetched_at !== null && !isIso(raw.fetched_at)) return null;
   let last_error = null;
   if (isObj(raw.last_error) && isIso(raw.last_error.at) && typeof raw.last_error.message === "string") {
-    last_error = { at: raw.last_error.at, message: raw.last_error.message.slice(0, 300) };
+    // `count`: failed checks in a row. Files from before 1.2.3 have none: one.
+    const count = Number.isInteger(raw.last_error.count) && raw.last_error.count >= 1 ? Math.min(raw.last_error.count, 1_000_000) : 1;
+    last_error = { at: raw.last_error.at, message: raw.last_error.message.slice(0, 300), count };
   }
   const fable_fetched_at = isIso(raw.fable_fetched_at) ? raw.fable_fetched_at : raw.fetched_at;
-  return { version: 1, fetched_at: raw.fetched_at, fable_fetched_at, five_hour: validWindow(raw.five_hour), seven_day: validWindow(raw.seven_day), fable: validWindow(raw.fable), last_error };
+  const out = { version: 1, fetched_at: raw.fetched_at, fable_fetched_at, five_hour: validWindow(raw.five_hour), seven_day: validWindow(raw.seven_day), fable: validWindow(raw.fable), last_error };
+  // held: a dropped % waiting for the next reading to confirm it. paced: windows pace moved tighter.
+  const held = {};
+  const paced = {};
+  for (const k of WINDOW_KEYS) {
+    const h = isObj(raw.held) ? raw.held[k] : undefined;
+    if (typeof h === "number" && Number.isFinite(h) && h >= 0 && h <= 1000) held[k] = h;
+    const p = isObj(raw.paced) ? raw.paced[k] : undefined;
+    if (isIso(p)) paced[k] = p;
+  }
+  if (Object.keys(held).length) out.held = held;
+  if (Object.keys(paced).length) out.paced = paced;
+  return out;
+}
+
+/**
+ * Hold a drop of more than DROP_POINTS within a window that has not reset: one odd answer must not
+ * loosen the models. The window keeps its last % and the new one waits in `held`. The next reading
+ * settles it: nearer the held % means the drop was real (a plan change, or a limit reset early).
+ */
+export function holdDrops(prev, next, nowMs) {
+  const out = { ...next };
+  delete out.held;
+  const held = {};
+  for (const k of WINDOW_KEYS) {
+    const p = prev?.[k];
+    const n = next[k];
+    // A window carried over from the last answer (Fable, at times) is not a new reading: keep its hold.
+    if (n && n === p && typeof prev.held?.[k] === "number") {
+      held[k] = prev.held[k];
+      continue;
+    }
+    if (!p || !n || Date.parse(p.resets_at) <= nowMs) continue;
+    // A reset time that moved is a new window, not an odd answer.
+    if (!sameReset(n.resets_at, p.resets_at)) continue;
+    if (p.used - n.used <= DROP_POINTS) continue;
+    const h = prev.held?.[k];
+    if (typeof h === "number" && Math.abs(n.used - h) < Math.abs(n.used - p.used)) continue;
+    out[k] = { ...n, used: p.used };
+    held[k] = n.used;
+  }
+  if (Object.keys(held).length) out.held = held;
+  return out;
+}
+
+/** The windows that pace moved tighter in this budget, by their reset time, for limits.json. */
+export function pacedWindows(budget) {
+  const out = {};
+  for (const k of WINDOW_KEYS) {
+    const w = budget?.[k];
+    if (w && MODES.indexOf(w.mode) > MODES.indexOf(w.used_mode)) out[k] = w.resets_at;
+  }
+  return out;
 }
 
 /**
@@ -300,7 +366,7 @@ export function pacedMode(mode, pace, resetsInMin, windowMin, tighterAt = PACE_T
  * `windowMin` (the window's length) turns on pace; without it the mode comes from the % used alone.
  * Pace is worked out at `readMs`, the time of the reading, so an ageing reading keeps its pace.
  */
-export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS, windowMin = null, readMs = nowMs, tighterAt = undefined, paceOf = null) {
+export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS, windowMin = null, readMs = nowMs, tighterAt = undefined, paceOf = null, wasTighter = false) {
   if (!w) return null;
   if (Date.parse(w.resets_at) <= nowMs) return { used: 0, mode: "open", used_mode: "open", pace: null, resets_at: w.resets_at, resets_in_min: 0 };
   const used = Math.round(w.used);
@@ -311,7 +377,9 @@ export function budgetWindow(w, nowMs, thresholds = DEFAULT_THRESHOLDS, windowMi
   // tighten follows whichever one answered.
   const fromPattern = windowMin && paceOf ? paceOf(used) : null;
   const pace = !windowMin ? null : fromPattern ?? paceFor(used, readMins, windowMin);
-  const bar = fromPattern !== null && fromPattern !== undefined ? PACE_TIGHTER_PATTERN : tighterAt;
+  const fullBar = fromPattern !== null && fromPattern !== undefined ? PACE_TIGHTER_PATTERN : tighterAt ?? PACE_TIGHTER.five_hour;
+  // Already moved tighter at the last reading: it stays so until pace is well under the bar.
+  const bar = wasTighter ? fullBar - PACE_HOLD : fullBar;
   const mode = pacedMode(usedMode, pace, readMins, windowMin, bar);
   const pace_from = pace === null ? null : fromPattern !== null && fromPattern !== undefined ? "pattern" : "line";
   return { used, mode, used_mode: usedMode, pace, pace_from, resets_at: w.resets_at, resets_in_min: mins };
@@ -385,21 +453,58 @@ export function rolesText(roles, effort = null) {
 function adviceText(fiveHourMode) {
   let s = "";
   if (fiveHourMode === "tight") s += " No new parallel fan-outs.";
-  else if (fiveHourMode === "out") s += " 5h nearly out: no new fan-outs, finish what is running.";
+  else if (fiveHourMode === "out") s += " 5h nearly out: finish what is running; at most one review subagent.";
   else if (fiveHourMode === "exhausted") s += " 5h limit reached: start no new subagents.";
   return s;
 }
 
 function delegateText(delegate) {
-  if (delegate === "always") return " Every task: plan and review in subagents on these models.";
+  if (delegate === "always") return " Every task: plan on the plan model, then review in a subagent.";
   if (delegate === "spawn_only") return "";
-  return " Medium and large tasks: review in a subagent, and plan in one too when large, on these models.";
+  return " Medium and large tasks: review in a subagent; for large ones, plan on the plan model first.";
 }
 
-// Only the model sees the line, so these two are worded as instructions to it.
-const problemText = (problems) => (problems.length ? ` Settings have ${problems.length} problem${problems.length === 1 ? "" : "s"}, defaults used for them: tell the user once, and offer to show the model budget.` : "");
-/** A failed check is only news while it is recent: after a break, the old error is not repeated. */
+/**
+ * Only the model sees the line, so news for the user is worded as one instruction to the model: settings
+ * problems, checks that keep failing, or both. It is one sentence, so the 600-character cap rarely
+ * reaches it, and the error itself is kept short.
+ */
+function tellText(problems, failing) {
+  const parts = [];
+  if (problems.length) parts.push(`settings have ${problems.length} problem${problems.length === 1 ? "" : "s"}, defaults used for them`);
+  if (failing) parts.push("checks keep failing");
+  if (!parts.length) return "";
+  const s = parts.join(", and ");
+  return ` ${s.charAt(0).toUpperCase()}${s.slice(1)}: tell the user once, and offer to show the model budget.`;
+}
+/** One failed check is only news while it is recent: after a break, an old one-off error is not repeated. */
 const FAIL_NEWS_MS = 2 * RETRY_AFTER_MS;
+/**
+ * Failures in a row stay news this long after the last one. Each prompt retries after 5 minutes, so
+ * while the user works the last failure is never older than the gap between prompts. After a long
+ * break, last night's failures wait for the first retry instead.
+ */
+const FAIL_STREAK_NEWS_MS = 60 * 60_000;
+/** The error text in the line is cut to this, so the instruction after it is never cut off. */
+const FAIL_TEXT_MAX = 80;
+
+/**
+ * The failed-check note for the line. One failure shows while it is under 10 minutes old. Two or more
+ * in a row always show, with the instruction to tell the user, until a check works again.
+ */
+function failureText(limits, nowMs) {
+  const err = limits?.last_error;
+  if (!err || Date.parse(err.at) < Date.parse(limits.fetched_at ?? 0)) return { note: "", failing: false };
+  const count = err.count ?? 1;
+  const age = ageMs(err.at, nowMs);
+  if (age > (count >= 2 ? FAIL_STREAK_NEWS_MS : FAIL_NEWS_MS)) return { note: "", failing: false };
+  const what = count >= 2 ? `the last ${count} checks failed` : "last check failed";
+  const msg = err.message.length > FAIL_TEXT_MAX ? `${err.message.slice(0, FAIL_TEXT_MAX - 1)}…` : err.message;
+  return { note: `; ${what}: ${msg}`, failing: count >= 2 };
+}
+
+/** The tighter of two modes (null counts as no mode). */
+const tighterMode = (a, b) => (b && MODES.indexOf(b) > MODES.indexOf(a) ? b : a);
 
 /** Strip control characters and cap the length: the line goes straight into the prompt. */
 export function clean(s) {
@@ -415,18 +520,36 @@ export function buildBudget(limits, config, nowMs, history = null) {
   const status = readingStatus(limits, nowMs);
   const base = { schema_version: 1, at: isoSeconds(nowMs), limits_fetched_at: limits?.fetched_at ?? null, status };
 
+  const fail = failureText(limits, nowMs);
+
   if (status !== "fresh") {
-    const roles = rolesFor(null, null, cfg.roles);
-    const effort = effortFor(null, null, cfg.effort);
-    const err = limits?.last_error;
-    const recent = err && ageMs(err.at, nowMs) <= FAIL_NEWS_MS && !(Date.parse(err.at) < Date.parse(limits.fetched_at ?? 0));
-    const failed = recent ? `; last check failed: ${err.message.slice(0, 120)}` : "";
+    // Use only grows inside a window, so a window that has not reset yet is at least as used as
+    // the last reading said: the fallback is never looser than that.
+    const still = (k) => {
+      const w = limits?.[k];
+      return w && Date.parse(w.resets_at) > nowMs ? w : null;
+    };
+    // Pace counts too: a window that pace had moved tighter keeps that step (pacedMode never goes past tight).
+    const modeOf = (k) => {
+      const w = still(k);
+      if (!w) return null;
+      const m = modeFor(Math.round(w.used), w.severity, cfg.thresholds);
+      const paced = cfg.pace !== "off" && limits.paced?.[k] && sameReset(limits.paced[k], w.resets_at);
+      return paced && MODES.indexOf(m) < MODES.indexOf("tight") ? MODES[MODES.indexOf(m) + 1] : m;
+    };
+    const fableMode = tighterMode("steady", modeOf("fable"));
+    const weeklyMode = tighterMode("open", modeOf("seven_day"));
+    const fiveMode = modeOf("five_hour");
+    const roles = rolesFor(fableMode, weeklyMode, cfg.roles);
+    const effort = effortFor(fableMode, weeklyMode, cfg.effort);
+    const seen = [["five_hour", "5h"], ["seven_day", "week"], ["fable", "Fable"]].filter(([k]) => still(k)).map(([k, label]) => `${label} ${Math.round(still(k).used)}%`);
+    const lastSeen = seen.length ? `: ${seen.join(", ")}` : "";
     const what =
       status === "stale"
-        ? `reading is stale (last good reading ${longUntil(Math.max(0, Math.round(ageMs(limits.fetched_at, nowMs) / 60_000)))} ago${failed})`
-        : `no usage reading yet${failed}`;
-    const tell = recent ? " If this keeps happening, tell the user once, and offer to show the model budget." : "";
-    const line = clean(`Budget: ${what}. Fallback: ${rolesText(roles, effort)}${delegateText(cfg.delegate)}${problemText(cfg.problems)}${tell}`);
+        ? `reading is stale (last good reading ${longUntil(Math.max(0, Math.round(ageMs(limits.fetched_at, nowMs) / 60_000)))} ago${lastSeen}${fail.note})`
+        : `no usage reading yet${fail.note}`;
+    const delegate = fiveMode === "exhausted" ? "" : delegateText(cfg.delegate);
+    const line = clean(`Budget: ${what}. Fallback: ${rolesText(roles, effort)}${delegate}${adviceText(fiveMode)}${tellText(cfg.problems, fail.failing)}`);
     return { ...base, five_hour: null, seven_day: null, fable: null, pace_source: paceSource(cfg, history), day: null, roles, effort, line };
   }
 
@@ -443,11 +566,12 @@ export function buildBudget(limits, config, nowMs, history = null) {
     const resetMs = Date.parse(w.resets_at);
     return [PACE_TIGHTER.seven_day, (used) => patternPace(used, resetMs, at, WINDOW_MIN.seven_day, pattern.shares, day)];
   };
-  const five_hour = budgetWindow(limits.five_hour, nowMs, cfg.thresholds, len("five_hour"), readAt, PACE_TIGHTER.five_hour);
-  const seven_day = budgetWindow(limits.seven_day, nowMs, cfg.thresholds, len("seven_day"), readAt, ...weekly(limits.seven_day, readAt));
+  const was = (k) => Boolean(limits[k] && limits.paced?.[k]) && sameReset(limits.paced[k], limits[k].resets_at);
+  const five_hour = budgetWindow(limits.five_hour, nowMs, cfg.thresholds, len("five_hour"), readAt, PACE_TIGHTER.five_hour, null, was("five_hour"));
+  const seven_day = budgetWindow(limits.seven_day, nowMs, cfg.thresholds, len("seven_day"), readAt, ...weekly(limits.seven_day, readAt), was("seven_day"));
   // A Fable window carried over from an older answer is dropped once it is stale itself.
   const fableFresh = ageMs(limits.fable_fetched_at ?? limits.fetched_at, nowMs) <= STALE_AFTER_MS;
-  const fable = fableFresh ? budgetWindow(limits.fable, nowMs, cfg.thresholds, len("fable"), fableReadAt, ...weekly(limits.fable, fableReadAt)) : null;
+  const fable = fableFresh ? budgetWindow(limits.fable, nowMs, cfg.thresholds, len("fable"), fableReadAt, ...weekly(limits.fable, fableReadAt), was("fable")) : null;
   // A pace step between open and steady (either way) that changes nothing only adds noise: undo it.
   // 5h steady has no advice, and weekly steady only matters when its mechanical row differs from open.
   const openSteady = (w) => w && w.mode !== w.used_mode && ["open", "steady"].includes(w.mode) && ["open", "steady"].includes(w.used_mode);
@@ -462,11 +586,11 @@ export function buildBudget(limits, config, nowMs, history = null) {
   const roles = rolesFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.roles);
   const effort = effortFor(fable?.mode ?? null, seven_day?.mode ?? null, cfg.effort);
   const ageMin = Math.round(ageMs(limits.fetched_at, nowMs) / 60_000);
-  const age = ageMs(limits.fetched_at, nowMs) > REFRESH_AFTER_MS ? ` Reading ${ageMin} min old.` : "";
+  const age = ageMs(limits.fetched_at, nowMs) > REFRESH_AFTER_MS ? ` Reading ${ageMin} min old${fail.note}.` : "";
   const head = `Budget: ${windowText("5h", five_hour, true)} · ${windowText("week", seven_day, true)} · ${windowText("Fable", fable, false)}.${dayText(day)}${age}`;
   // With the 5-hour limit reached, no subagents at all: drop the delegate sentence.
   const delegate = five_hour?.mode === "exhausted" ? "" : delegateText(cfg.delegate);
-  const line = clean(`${head} ${rolesText(roles, effort)}${delegate}${adviceText(five_hour?.mode)}${problemText(cfg.problems)}`);
+  const line = clean(`${head} ${rolesText(roles, effort)}${delegate}${adviceText(five_hour?.mode)}${tellText(cfg.problems, Boolean(age) && fail.failing)}`);
   return { ...base, five_hour, seven_day, fable, pace_source: pattern ? pattern.source : paceOn ? "straight line" : "off", day, roles, effort, line };
 }
 
@@ -481,5 +605,6 @@ export function paceSource(cfg, history) {
 function dayText(day) {
   if (!day || day.kind === "usual") return "";
   const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
-  return ` ${day.kind === "heavy" ? "Heavy" : "Quiet"} day: ${fmt(day.actual)} points of the week used today, usually ${fmt(day.typical)} by now.`;
+  const points = (n) => `${fmt(n)} point${fmt(n) === "1" ? "" : "s"}`;
+  return ` ${day.kind === "heavy" ? "Heavy" : "Quiet"} day: ${points(day.actual)} of the week used today, usually ${fmt(day.typical)} by now.`;
 }

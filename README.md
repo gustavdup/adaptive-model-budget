@@ -5,7 +5,7 @@
 While you have plenty left, Fable plans and reviews and Opus builds. As your limits fill up, it moves work to cheaper models and lower effort. It also watches how fast you are using each limit for the time left before it resets. You get a line like this on every prompt, and Claude follows it:
 
 ```
-Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent, and plan in one too when large, on these models.
+Budget: 5h 20% open (resets in 2h) · week 10% open (resets in 4d4h) · Fable 10% open. Plan fable high, build opus medium, review fable high, mechanical sonnet low. Medium and large tasks: review in a subagent; for large ones, plan on the plan model first.
 ```
 
 Each role gets a model and an effort level for its subagents.
@@ -73,6 +73,7 @@ The line shows each window's percent used, its mode, and the time until it reset
 - On pace for 110 % or more (130 % for the weekly and Fable windows until it knows your rhythm, see below): the window moves one mode tighter. For example, 60 % of the week used after 3 days is on pace for 140 %, so steady becomes tight.
 - On pace for under 70 %, with at least half the window gone: one mode looser. For example, Fable at 55 % with a day left is on pace for 64 %, so steady becomes open and Fable plans again.
 - Pace moves a mode by one step at most, and never past tight: only the % used, or Claude's own warning, makes a window out. It waits until 10 % of the window has gone. It never loosens a window that is out or exhausted.
+- Once pace has moved a window tighter, it stays so until pace is 10 points under the bar, so the mode does not flip back and forth.
 - The line says "on pace for" only when pace moved the mode.
 - Turn it off with `config set pace=off`.
 
@@ -81,6 +82,7 @@ The line shows each window's percent used, its mode, and the time until it reset
 - It uses the median of the last 6 weeks for each block. One odd week barely moves it, and a lasting change takes over in 3 or 4 weeks.
 - **Heavy and quiet days.** It compares today's use so far with your usual by this time of day. When today is well outside your usual range for this time of day (at least 3 points, and at least half as much again), the line says so, for example `Heavy day: 12 points of the week used today, usually 4 by now.` The rest of today then counts as heavier (or lighter) in the pace.
 - The 5-hour window always uses a straight line.
+- **Odd answers.** A sudden drop of more than 2 points, or a jump of more than 10, waits for the next reading before it counts. If the next one agrees, it was real: a drop after a plan upgrade scales the older weeks to the new plan, and a drop with a new reset time starts a new week. If not, it was an odd answer and is dropped. The line also keeps the last % for one reading after a sudden drop, so one odd answer never loosens the models.
 - The record only grows while Claude Code runs (or with the background job on). It never leaves your machine.
 - **From day one, optionally.** With `config set transcripts=on`, a background check once a day learns your rhythm from Claude Code's own transcripts on this machine, until there are 2 weeks of readings. It keeps and uses only the time and token counts of each reply, never any text, and stores only 42 numbers. It is off unless you turn it on.
 
@@ -109,17 +111,17 @@ The effort only applies to subagents. The effort of your main session stays your
 
 - **Small** (a quick fix, a question, a read): Claude does it itself, with no subagents.
 - **Medium** (one area, a few files, a clear approach): Claude builds it, then a review subagent checks it.
-- **Large** (a new feature, many files, risky or unclear): a plan subagent, the build, a review subagent, and the final check when the line names one.
+- **Large** (a new feature, many files, risky or unclear): planning on the plan model (a subagent, unless Claude already runs on it), the build on the build model, a review subagent, and one final check when the line names one.
 
 **Delegation.** The budget can only choose models for subagents. It can't change the model your main session runs on. To get Fable planning and reviewing, Claude hands planning and review to subagents. You choose when:
 
-- `bigger` (the default): a review subagent for medium tasks, and plan and review subagents for large ones. Small tasks get none.
+- `bigger` (the default): a review subagent for medium tasks, and for large ones planning on the plan model too. Small tasks get none.
 - `always`: for every task.
 - `spawn_only`: only when Claude spawns subagents anyway.
 
 Tip: run your main session on the build model, which is Opus by default.
 
-**If the reading is old.** A reading more than 45 minutes old is called stale. The line then shows a safe fallback instead: Opus plans and builds, Fable reviews, Sonnet does mechanical work.
+**If the reading is old.** A reading more than 45 minutes old is called stale. The line then shows a safe fallback instead: Opus plans and builds, Fable reviews, Sonnet does mechanical work. Use only grows inside a window, so if the last reading was already tight and that window has not reset, the fallback stays at least that tight. When checks keep failing (two or more in a row), Claude tells you once and offers to show the model budget.
 
 ## Change models and limits
 
@@ -135,7 +137,7 @@ config set effort.all.build=high          # build subagents on high effort in ev
 config set effort.tight.review=high       # one effort cell
 config set pace=off                       # modes from % used only
 config set transcripts=on                 # learn your rhythm from transcripts from day one
-config set delegate=always                # plan and review in subagents on every task
+config set delegate=always                # plan on the plan model and review in a subagent, on every task
 config init                               # write every setting out to the file
 config reset                              # back to the defaults
 ```
@@ -167,14 +169,14 @@ Your settings are yours alone. They live in `~/.config/model-budget/config.json`
 
 - **The file isn't there yet?** Run `/model-budget:budget-setup` once, or ask Claude to "write out my model budget settings".
 - **Changes apply on your next prompt.** There is no restart.
-- **A bad value is safe.** It falls back to its default, and Claude tells you once. Run `/model-budget:budget` to see what is wrong.
+- **A bad value is safe.** It falls back to its default, and Claude tells you once. Run `/model-budget:budget` to see what is wrong. The next `config set` or `config init` removes it (or puts its default back) and says what it fixed.
 - **To go back to the defaults,** delete the file, or ask Claude to reset your model budget.
 
 ## Background job (optional, off by default)
 
 Without the job, the reading refreshes in the background while you work, at most every 15 minutes. A reading between 15 and 45 minutes old is still used and the line shows its age. After a longer break, the first prompt shows the fallback, and the real figures are back a few seconds later.
 
-If you want it fresh all the time, turn on the job in `/model-budget:budget-setup`. On macOS it is a launchd job, `local.model-budget.refresh`. On Linux it is one crontab line ending in `# model-budget`. It runs every 15 minutes, and its log is `~/.config/model-budget/run.log`.
+If you want it fresh all the time, turn on the job in `/model-budget:budget-setup`. On macOS it is a launchd job, `local.model-budget.refresh`. On Linux it is one crontab line ending in `# model-budget`. It runs every 15 minutes, and its log is `~/.config/model-budget/run.log`. The log is private to you, and it is cut back to its last 16 KB once it passes 64 KB.
 
 After a plugin update, the job picks up the new version by itself on your next prompt.
 

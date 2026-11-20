@@ -2,7 +2,9 @@
 name: budget-uninstall
 description: Remove the model budget background job and delete all its settings and readings. Run by the user as a slash command.
 disable-model-invocation: true
-allowed-tools: Bash(node *agent-budget/scripts/budget.mjs*)
+allowed-tools:
+  - Bash(node /*/agent-budget/scripts/budget.mjs uninstall --yes)
+  - Bash(node "/*/agent-budget/scripts/budget.mjs" uninstall --yes)
 ---
 
 # Budget uninstall

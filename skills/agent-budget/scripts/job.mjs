@@ -4,7 +4,7 @@
 // path on every plugin update.
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { VERSION } from "./core.mjs";
@@ -192,6 +192,10 @@ export function installJob({ dir, claude, node = stableNode(), sourceDir, platfo
   const bin = copyScripts(dir, sourceDir);
   if (!bin) throw new Error("another session is updating the job's scripts; try again in a minute");
   const opts = { node, script: join(bin, "budget.mjs"), claude, dir, configDir };
+  // Make run.log first, private, so launchd or cron appends to it instead of making it readable by all.
+  const log = join(dir, "run.log");
+  closeSync(openSync(log, "a", 0o600));
+  chmodSync(log, 0o600);
 
   if (platform === "darwin") {
     const p = plistPath(home);
